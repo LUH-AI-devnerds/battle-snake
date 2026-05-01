@@ -1,0 +1,7 @@
+# Dependencies for Battlesnake AI agent
+numpy
+torch>=2.0.0
+tensorboard
+fastapi
+uvicorn
+# hisss should be installed from the adjacent folder using pip install -e ../hisss
