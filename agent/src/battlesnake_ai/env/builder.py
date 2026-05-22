@@ -1,7 +1,7 @@
 import hisss
 from typing import Literal
 
-def make_env(mode: Literal["duel", "standard", "restricted_duel", "restricted_standard"] = "duel") -> hisss.BattleSnakeGame:
+def make_env(mode: Literal["duel", "standard", "restricted_duel", "restricted_standard"] = "restricted_standard") -> hisss.BattleSnakeGame:
     """
     Creates and returns a Battlesnake environment configured for the specific mode.
     """

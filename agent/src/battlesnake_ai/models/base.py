@@ -14,10 +14,12 @@ class BaseModel(nn.Module):
 
     def preprocess_observation(self, obs_np: np.ndarray) -> torch.Tensor:
         """
-        Converts a numpy observation of shape (Batch, Width, Height, Channels)
-        into a PyTorch tensor of shape (Batch, Channels, Width, Height).
+        Converts a numpy observation of shape (Batch, Width, Height, Channels) or
+        (Width, Height, Channels) into a PyTorch tensor of shape (N, Channels, Width, Height).
         """
         x = torch.from_numpy(obs_np).float()
+        if x.ndim == 3:
+            x = x.unsqueeze(0)
         if x.ndim == 4:
             x = x.permute(0, 3, 1, 2)
         return x

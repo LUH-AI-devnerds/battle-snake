@@ -12,7 +12,7 @@ from battlesnake_ai.training.loop import TrainingLoop
 
 def main():
     parser = argparse.ArgumentParser(description="Train a Battlesnake AI model")
-    parser.add_argument("--mode", type=str, default="duel", choices=["duel", "standard", "restricted_duel", "restricted_standard"], help="Game mode")
+    parser.add_argument("--mode", type=str, default="restricted_standard", choices=["duel", "standard", "restricted_duel", "restricted_standard"], help="Game mode")
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to simulate")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory for logs")
     args = parser.parse_args()
