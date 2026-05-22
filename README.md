@@ -81,7 +81,26 @@ python scripts/train_dqn.py --mode duel --episodes 20 --gui --gui-every 2
 | `restricted_duel` | Duel with restricted ruleset |
 | `restricted_standard` | Default for training scripts |
 
-Pass `--mode` to either training script. The DQN loop is built for simultaneous moves and joint legal actions; duel / two-snake setups are the primary target.
+Pass `--mode` to either training script. The DQN loop supports simultaneous moves and joint legal actions for any player count hisss allows.
+
+### Number of snakes
+
+| Mode family | Default snakes | Override |
+|-------------|----------------|----------|
+| `duel`, `restricted_duel` | 2 | Fixed at 2 (duel ruleset) |
+| `standard`, `restricted_standard` | 4 | `--num-players N` |
+
+Examples:
+
+```bash
+# Four snakes (default for restricted_standard)
+python scripts/train_dqn.py --mode restricted_standard --episodes 50
+
+# Six-snake free-for-all on the standard ruleset
+python scripts/train_dqn.py --mode standard --num-players 6 --episodes 50
+```
+
+`make_env(mode, num_players=N)` applies the same override in Python. hisss also lets you set `num_players`, board size, and spawn positions on a `BattleSnakeConfig` directly (see `example_board_and_model.py` and `make_custom_duel_env()` in `agent/src/battlesnake_ai/env/builder.py`).
 
 ## Training details
 
@@ -102,6 +121,7 @@ Useful flags:
 
 | Flag | Default | Purpose |
 |------|---------|---------|
+| `--num-players` | mode default | Snake count (standard modes only; duel stays 2) |
 | `--replay-size` | 50000 | Replay buffer capacity |
 | `--batch-size` | 64 | Minibatch size |
 | `--gamma` | 0.99 | Discount factor |
