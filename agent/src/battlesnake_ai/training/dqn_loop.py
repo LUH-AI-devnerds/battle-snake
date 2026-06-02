@@ -8,14 +8,14 @@ legal joint move when the greedy tuple is not allowed.
 
 from __future__ import annotations
 
-import random
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from battlesnake_ai.models.dqn import DQN
+from battlesnake_ai.training.action_selection import select_joint_actions_epsilon_greedy
 from battlesnake_ai.training.dqn_logging import DQNMetricsLogger
 from battlesnake_ai.training.replay_buffer import ReplayBuffer, Transition
 from battlesnake_ai.viz.board_gui import action_tuple_label
@@ -25,49 +25,6 @@ def _terminal_next_obs_like(obs: np.ndarray) -> np.ndarray:
     return np.zeros_like(obs)
 
 
-def _joint_legal_set(env: Any) -> Set[Tuple[int, ...]]:
-    return set(tuple(x) for x in env.available_joint_actions())
-
-
-def select_joint_actions_epsilon_greedy(
-    env: Any,
-    policy: DQN,
-    obs: np.ndarray,
-    epsilon: float,
-) -> Tuple[int, ...]:
-    """
-    Independent ε-greedy per alive snake on masked Q-values; if the tuple is not jointly legal,
-    sample a uniform random legal joint action.
-
-    ``obs`` axis 0 matches ``env.players_at_turn()`` order (same as joint moves).
-    """
-    joint_set = _joint_legal_set(env)
-    players_here = list(env.players_at_turn())
-
-    if random.random() < epsilon:
-        return tuple(random.choice(env.available_joint_actions()))
-
-    def masked_argmax(q: np.ndarray, legal: List[int]) -> int:
-        best = legal[0]
-        best_v = q[best]
-        for a in legal[1:]:
-            if q[a] > best_v:
-                best_v = q[a]
-                best = a
-        return int(best)
-
-    greedy: List[int] = []
-    with torch.no_grad():
-        for row_idx, pid in enumerate(players_here):
-            q = policy(obs[row_idx : row_idx + 1]).detach().cpu().numpy()[0]
-            la = env.available_actions(pid)
-            greedy.append(masked_argmax(q, la))
-    tup = tuple(greedy)
-    if tup in joint_set:
-        return tup
-    return tuple(random.choice(env.available_joint_actions()))
-
-
 def _stack_batch_obs(obs_list: List[np.ndarray]) -> np.ndarray:
     return np.stack(obs_list, axis=0)
 
@@ -75,7 +32,7 @@ def _stack_batch_obs(obs_list: List[np.ndarray]) -> np.ndarray:
 class DQNTrainingLoop:
     def __init__(
         self,
-        env: hisss.BattleSnakeGame,
+        env: Any,
         policy_net: DQN,
         target_net: DQN,
         replay: ReplayBuffer,
@@ -332,7 +289,12 @@ class DQNTrainingLoop:
                 pass
         return {"turns": turns, "rewards": ep_returns}
 
-    def train(self, num_episodes: int) -> None:
+    def train(
+        self,
+        num_episodes: int,
+        *,
+        on_episode_end: Optional[Callable[[int], None]] = None,
+    ) -> None:
         cfg = {
             "gamma": self.gamma,
             "batch_size": self.batch_size,
@@ -348,3 +310,5 @@ class DQNTrainingLoop:
 
         for ep in range(1, num_episodes + 1):
             self.run_episode(ep)
+            if on_episode_end is not None:
+                on_episode_end(ep)

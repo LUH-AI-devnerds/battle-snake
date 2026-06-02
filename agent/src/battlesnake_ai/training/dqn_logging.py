@@ -12,8 +12,8 @@ from typing import Any, Dict, Optional
 
 try:
     from torch.utils.tensorboard import SummaryWriter
-except ImportError:
-    SummaryWriter = None  # type: ignore
+except Exception:
+    SummaryWriter = None  # type: ignore[misc, assignment]
 
 
 class DQNMetricsLogger:

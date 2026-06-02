@@ -5,7 +5,8 @@ from datetime import datetime
 try:
     from torch.utils.tensorboard import SummaryWriter
     HAS_TENSORBOARD = True
-except ImportError:
+except Exception:
+    SummaryWriter = None  # type: ignore[misc, assignment]
     HAS_TENSORBOARD = False
 
 def setup_logger(log_dir: str = "logs", log_name: str = "training") -> logging.Logger:

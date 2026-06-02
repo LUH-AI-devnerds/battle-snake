@@ -13,6 +13,13 @@ from battlesnake_ai.training.loop import TrainingLoop
 def main():
     parser = argparse.ArgumentParser(description="Train a Battlesnake AI model")
     parser.add_argument("--mode", type=str, default="restricted_standard", choices=["duel", "standard", "restricted_duel", "restricted_standard"], help="Game mode")
+    parser.add_argument(
+        "--num-players",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of snakes (default: 2 for duel modes, 4 for standard modes)",
+    )
     parser.add_argument("--episodes", type=int, default=10, help="Number of episodes to simulate")
     parser.add_argument("--log-dir", type=str, default="logs", help="Directory for logs")
     args = parser.parse_args()
@@ -24,7 +31,7 @@ def main():
     logger.info(f"Initializing {args.mode} environment...")
     
     # 2. Build Environment
-    env = make_env(mode=args.mode)
+    env = make_env(mode=args.mode, num_players=args.num_players)
     
     # 3. Build Model
     env.reset()
