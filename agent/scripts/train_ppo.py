@@ -31,6 +31,18 @@ def main() -> None:
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--gui-every", type=int, default=1)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=10,
+        help="Evaluate policy against random every N episodes (0 to disable)",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of episodes for evaluation",
+    )
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
 
@@ -67,6 +79,8 @@ def main() -> None:
         value_coef=args.value_coef,
         gui=gui,
         gui_every=args.gui_every,
+        eval_every=args.eval_every,
+        eval_episodes=args.eval_episodes,
     )
 
     ckpt_dir = (

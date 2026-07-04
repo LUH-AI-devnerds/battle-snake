@@ -1,0 +1,51 @@
+{
+  "mode": "restricted_standard",
+  "episodes": 10,
+  "seed": 0,
+  "results": [
+    {
+      "agent_name": "Agent 0: random",
+      "1st": 3,
+      "2nd": 2,
+      "3rd": 4,
+      "4th": 1,
+      "win_rate": 0.3,
+      "avg_score": 0.8,
+      "avg_survival": 91.1,
+      "avg_length": 6.1
+    },
+    {
+      "agent_name": "Agent 1: random",
+      "1st": 2,
+      "2nd": 3,
+      "3rd": 2,
+      "4th": 3,
+      "win_rate": 0.2,
+      "avg_score": 0.7,
+      "avg_survival": 104.8,
+      "avg_length": 7.0
+    },
+    {
+      "agent_name": "Agent 2: random",
+      "1st": 2,
+      "2nd": 2,
+      "3rd": 3,
+      "4th": 3,
+      "win_rate": 0.2,
+      "avg_score": 0.6,
+      "avg_survival": 86.1,
+      "avg_length": 5.7
+    },
+    {
+      "agent_name": "Agent 3: random",
+      "1st": 3,
+      "2nd": 3,
+      "3rd": 1,
+      "4th": 3,
+      "win_rate": 0.3,
+      "avg_score": 0.9,
+      "avg_survival": 100.4,
+      "avg_length": 6.8
+    }
+  ]
+}

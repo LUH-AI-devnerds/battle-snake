@@ -33,6 +33,18 @@ def main() -> None:
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--gui", action="store_true")
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=10,
+        help="Evaluate policy against random every N episodes (0 to disable)",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of episodes for evaluation",
+    )
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
 
@@ -77,6 +89,8 @@ def main() -> None:
         entropy_coef=args.entropy_coef,
         gui=gui,
         freeze_encoder=args.freeze_encoder,
+        eval_every=args.eval_every,
+        eval_episodes=args.eval_episodes,
     )
 
     ckpt_dir = (

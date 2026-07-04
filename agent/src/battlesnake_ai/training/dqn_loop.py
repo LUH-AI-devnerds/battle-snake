@@ -52,6 +52,8 @@ class DQNTrainingLoop:
         device: Optional[torch.device] = None,
         gui: Optional[Any] = None,
         gui_every: int = 1,
+        eval_every: int = 0,
+        eval_episodes: int = 10,
     ):
         self.env = env
         self.policy = policy_net
@@ -71,6 +73,8 @@ class DQNTrainingLoop:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.gui = gui
         self.gui_every = gui_every
+        self.eval_every = eval_every
+        self.eval_episodes = eval_episodes
         self.lr = lr
 
         self.policy.to(self.device)
@@ -289,6 +293,97 @@ class DQNTrainingLoop:
                 pass
         return {"turns": turns, "rewards": ep_returns}
 
+    def evaluate_policy(self, num_episodes: int = 10) -> Dict[str, float]:
+        import hisss
+        import random
+
+        was_training = self.policy.training
+        self.policy.eval()
+
+        eval_env = hisss.BattleSnakeGame(self.env.cfg)
+
+        wins = 0
+        total_steps = 0
+        total_returns = 0.0
+
+        for ep in range(num_episodes):
+            eval_env.reset()
+            done = False
+            steps = 0
+            ep_return = 0.0
+            last_rewards = None
+
+            # Policy controls seat 0
+            seat = 0
+
+            while not done:
+                obs, _, _ = eval_env.get_obs()
+                pat = list(eval_env.players_at_turn())
+
+                if seat not in pat:
+                    # Policy is dead, others play randomly
+                    actions = []
+                    for pid in pat:
+                        la = eval_env.available_actions(pid)
+                        actions.append(int(random.choice(la)))
+                    joint = tuple(actions)
+                    legal = [tuple(x) for x in eval_env.available_joint_actions()]
+                    if joint not in legal:
+                        joint = tuple(random.choice(legal))
+                    last_rewards, done, _ = eval_env.step(joint)
+                    steps += 1
+                    continue
+
+                actions = []
+                for row_idx, pid in enumerate(pat):
+                    if pid == seat:
+                        sl = obs[row_idx : row_idx + 1]
+                        with torch.no_grad():
+                            q = self.policy(sl).detach().cpu().numpy()[0]
+                        la = eval_env.available_actions(pid)
+                        best = la[0]
+                        best_v = q[best]
+                        for a in la[1:]:
+                            if q[a] > best_v:
+                                best_v = q[a]
+                                best = a
+                        actions.append(int(best))
+                    else:
+                        la = eval_env.available_actions(pid)
+                        actions.append(int(random.choice(la)))
+
+                joint = tuple(actions)
+                legal = [tuple(x) for x in eval_env.available_joint_actions()]
+                if joint not in legal:
+                    joint = tuple(random.choice(legal))
+
+                last_rewards, done, _ = eval_env.step(joint)
+                steps += 1
+
+            if last_rewards is not None:
+                rewards_list = [float(last_rewards[i]) for i in range(len(last_rewards))]
+                seat_reward = rewards_list[seat]
+                other_rewards = [rewards_list[i] for i in range(len(rewards_list)) if i != seat]
+                if len(other_rewards) == 0:
+                    wins += 1
+                elif seat_reward > max(other_rewards):
+                    wins += 1
+                total_returns += seat_reward
+
+            total_steps += steps
+
+        win_rate = wins / num_episodes
+        avg_steps = total_steps / num_episodes
+        avg_return = total_returns / num_episodes
+
+        self.policy.train(was_training)
+
+        return {
+            "win_rate": win_rate,
+            "avg_steps": avg_steps,
+            "avg_return": avg_return,
+        }
+
     def train(
         self,
         num_episodes: int,
@@ -305,6 +400,8 @@ class DQNTrainingLoop:
             "epsilon_end": self.epsilon_end,
             "epsilon_decay_steps": self.epsilon_decay_steps,
             "replay_capacity": self.replay.capacity,
+            "eval_every": self.eval_every,
+            "eval_episodes": self.eval_episodes,
         }
         self.metrics.log_training_startup(cfg)
 
@@ -312,3 +409,12 @@ class DQNTrainingLoop:
             self.run_episode(ep)
             if on_episode_end is not None:
                 on_episode_end(ep)
+            if self.eval_every > 0 and ep % self.eval_every == 0:
+                eval_stats = self.evaluate_policy(self.eval_episodes)
+                self.metrics.log_evaluation(
+                    ep,
+                    win_rate=eval_stats["win_rate"],
+                    avg_steps=eval_stats["avg_steps"],
+                    avg_return=eval_stats["avg_return"],
+                )
+

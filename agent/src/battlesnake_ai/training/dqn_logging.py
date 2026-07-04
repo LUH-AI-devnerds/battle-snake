@@ -135,3 +135,24 @@ class DQNMetricsLogger:
             for i, r in enumerate(episode_reward_sum):
                 self.tb.add_scalar(f"Episode/reward_snake_{i}", float(r), episode)
             self.tb.add_scalar("Episode/epsilon", epsilon, episode)
+
+    def log_evaluation(
+        self,
+        episode: int,
+        *,
+        win_rate: float,
+        avg_steps: float,
+        avg_return: float,
+    ) -> None:
+        self.logger.info(
+            "Evaluation at Episode %s | win_rate=%.1f%% | avg_steps=%.1f | avg_return=%.4f",
+            episode,
+            win_rate * 100.0,
+            avg_steps,
+            avg_return,
+        )
+        if self.tb is not None:
+            self.tb.add_scalar("Evaluation/win_rate_vs_random", win_rate, episode)
+            self.tb.add_scalar("Evaluation/avg_steps", avg_steps, episode)
+            self.tb.add_scalar("Evaluation/avg_return", avg_return, episode)
+

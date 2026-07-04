@@ -22,7 +22,9 @@ battle-snake/
 │       ├── inference/        # Checkpoint loader, ensemble policy
 │       └── viz/              # Matplotlib training GUI
 ├── example_board_and_model.py  # Standalone hisss + dummy CNN demo
-└── server.py                 # FastAPI `/` move endpoint stub
+├── server.py                 # Blackout 2026 FastAPI server
+├── Dockerfile / Procfile     # Deployment
+└── scripts/test_blackout_api.py
 ```
 
 ## Requirements
@@ -79,6 +81,12 @@ python scripts/train_dqn.py --mode duel --episodes 20 --gui --gui-every 2
 
 ```bash
 python scripts/train_rainbow.py --mode duel --episodes 500 --checkpoint-every 50
+```
+
+**Rainbow DQN with live board GUI:**
+
+```bash
+python scripts/train_rainbow.py --mode duel --episodes 20 --gui --gui-every 2
 ```
 
 **PPO**:
@@ -211,7 +219,8 @@ Useful flags (DQN / Rainbow):
 | `--train-after` | 500 | Min transitions before learning |
 | `--target-update-every` | 500 | Steps between target net copies |
 | `--epsilon-decay-steps` | 50000 | Linear ε decay schedule |
-| `--gui` | off | Matplotlib board + training HUD |
+| `--gui` | off | Matplotlib board + training HUD (DQN / Rainbow / PPO) |
+| `--gui-every` | 1 | Refresh GUI every N env steps when `--gui` is set |
 | `--checkpoint-every` | 0 | Save policy every N episodes (DQN / Rainbow / PPO) |
 
 View TensorBoard after a run:
@@ -220,24 +229,176 @@ View TensorBoard after a run:
 tensorboard --logdir agent/logs/tensorboard
 ```
 
-## Battlesnake server stub
+## Battlesnake Blackout submission
 
-`server.py` exposes a minimal [Battlesnake API](https://docs.battlesnake.com/api) shape for local testing:
+This repo includes a competition-ready server for [Battlesnake Blackout 2026](https://www.tnt.uni-hannover.de/bs-blackout-2026/) ([API docs](https://www.tnt.uni-hannover.de/bs-blackout-2026/doc)).
+
+Blackout runs **restricted standard** games: 15×15 board, 4 snakes, **view radius 5**. Use a checkpoint trained with `--mode restricted_standard` (17 input channels), for example:
+
+`logs/checkpoints/rainbow_20260602_182838_ep75.pt`
+
+### Endpoints
+
+| Method | Path | Response |
+|--------|------|----------|
+| `GET` | `/` | `{"author": "...", "color": "#RRGGBB"}` |
+| `POST` | `/start` | `{}` (200 OK) |
+| `POST` | `/move` | `{"move": "up"\|"down"\|"left"\|"right"}` |
+| `POST` | `/end` | `{}` (200 OK) |
+
+All handlers must respond in **under 500 ms**. The bundled Rainbow policy typically answers in ~1 ms on CPU.
+
+### Run locally
 
 ```bash
-uvicorn server:app --reload --port 8000
+cp .env.example .env   # set SNAKE_AUTHOR to your registered snake name
+export $(grep -v '^#' .env | xargs)
+export PYTHONPATH=agent/src
+export BATTLE_SNAKE_CHECKPOINT=logs/checkpoints/rainbow_20260602_182838_ep75.pt
+
+uvicorn server:app --host 0.0.0.0 --port 8000
 ```
 
-- `GET /` → `{"action": "move"}` (replace with model inference)
-- `GET /info` → health check
+Smoke-test against a real Blackout replay frame:
 
-Wire your trained policy into the root handler before playing on play.battlesnake.com.
+```bash
+python scripts/test_blackout_api.py
+```
+
+### Deploy
+
+**Docker** (includes checkpoint under `logs/checkpoints/`):
+
+```bash
+docker build -t battle-snake .
+docker run -p 8000:8000 \
+  -e SNAKE_AUTHOR="Your Registered Name" \
+  -e SNAKE_COLOR="#4488ff" \
+  battle-snake
+```
+
+**Railway / Render / Heroku**: use the included `Procfile` (`web: uvicorn server:app ...`). Set `SNAKE_AUTHOR`, `BATTLE_SNAKE_CHECKPOINT`, and expose port `8000`.
+
+Register on the Blackout site and submit your public HTTPS URL. The `author` field from `GET /` must match your registered snake name exactly.
 
 ## Implementation notes
 
 - Importing `battlesnake_ai` applies a small patch for hisss view-radius row indexing (`env/hisss_view_radius_fix.py`).
 - Observations from hisss are `(batch, width, height, channels)`; models permute to NCHW for `Conv2d`.
 - Training logs under `agent/logs/` are generated artifacts; add them to `.gitignore` if you commit frequently.
+
+## Example DQN training run
+
+From `agent/` (after [setup](#setup)):
+
+```bash
+python scripts/train_dqn.py \
+  --mode restricted_standard \
+  --episodes 50 \
+  --checkpoint-every 10 \
+  --log-updates-every 50
+```
+
+**What you get**
+
+| Path | Description |
+|------|-------------|
+| `logs/dqn_train_<timestamp>.log` | Console log (env steps at DEBUG, episodes and periodic updates at INFO) |
+| `logs/dqn_metrics.jsonl` | One JSON object per gradient step (loss, ε, TD stats) |
+| `logs/tensorboard/` | Scalars for episode length, per-snake reward, ε |
+| `logs/checkpoints/dqn_latest.pt` | Policy + metadata written when training finishes |
+| `logs/checkpoints/dqn_<timestamp>_ep{N}.pt` | Optional snapshots when `--checkpoint-every N` is set |
+
+**Sample console output** (abbreviated):
+
+```text
+INFO - Building environment (restricted_standard)...
+INFO - Observation shape: (4, 21, 21, 22) | channels=22
+INFO - DQN training configuration: { "gamma": 0.99, "batch_size": 64, ... }
+INFO - Episode 1 finished | env steps=142 | cumulative reward (per snake)=[0. 0. 1. 0.] | ε=0.9985 | replay size=142
+INFO - DQN update | loss=0.0129 | TD mean=-0.0998 | ... | ε=0.9952 | batch=64 | ...
+INFO - Saved checkpoint logs/checkpoints/dqn_20260522_193619_ep10.pt
+INFO - Saved latest checkpoint logs/checkpoints/dqn_latest.pt
+```
+
+**Monitor while training**
+
+```bash
+tensorboard --logdir agent/logs/tensorboard
+```
+
+**Evaluate the checkpoint**
+
+```bash
+python scripts/eval_agents.py --mode restricted_standard --episodes 100 \
+  --agents random dqn:logs/checkpoints/dqn_latest.pt
+```
+
+## Example Rainbow DQN training run (with GUI)
+
+From `agent/` (after [setup](#setup)). Opens a Matplotlib window with the board and training HUD; use a smaller episode count for interactive runs.
+
+```bash
+python scripts/train_rainbow.py \
+  --mode duel \
+  --episodes 50 \
+  --gui \
+  --gui-every 2 \
+  --checkpoint-every 10 \
+  --log-updates-every 50
+```
+
+```bash
+python scripts/train_rainbow.py \
+  --mode duel \
+  --episodes 50 \
+  --gui \
+  --gui-every 2 \
+  --checkpoint-every 10 \
+  --log-updates-every 50
+```
+
+`--gui-every 2` refreshes the board every two env steps (use `1` for every step; higher values reduce UI overhead on long runs).
+
+**What you get**
+
+| Path | Description |
+|------|-------------|
+| `logs/rainbow_train_<timestamp>.log` | Console log (`rainbow_train` logger name) |
+| `logs/dqn_metrics.jsonl` | Gradient-step metrics (same JSONL schema as vanilla DQN) |
+| `logs/tensorboard/` | Episode length, per-snake reward, ε |
+| `logs/checkpoints/rainbow_latest.pt` | Policy + metadata at end of training |
+| `logs/checkpoints/rainbow_<timestamp>_ep{N}.pt` | Optional snapshots with `--checkpoint-every N` |
+
+**Sample console output** (abbreviated):
+
+```text
+INFO - hisss reward_cfg: {'living_reward': 0.0, 'terminal_reward': 1.0}
+INFO - DQN training configuration: { "algorithm": "rainbow", "gamma": 0.99, "n_step": 3, ... }
+INFO - Episode 1 finished | env steps=68 | cumulative reward (per snake)=[1. 0.] | ε=0.9986 | replay size=68
+INFO - DQN update | loss=0.0412 | TD mean=0.0123 | ... | ε=0.9951 | batch=64 | ...
+INFO - Saved checkpoint logs/checkpoints/rainbow_20260522_120000_ep10.pt
+```
+
+**Monitor while training**
+
+```bash
+tensorboard --logdir agent/logs/tensorboard
+```
+
+**Evaluate the checkpoint**
+
+```bash
+python scripts/eval_agents.py --mode duel --episodes 100 \
+  --agents random rainbow:logs/checkpoints/rainbow_latest.pt
+```
+
+**Resume from a checkpoint** (GUI optional):
+
+```bash
+python scripts/train_rainbow.py --resume logs/checkpoints/rainbow_latest.pt \
+  --mode duel --episodes 200 --gui
+```
 
 ## License
 

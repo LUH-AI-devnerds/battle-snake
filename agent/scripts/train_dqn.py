@@ -48,6 +48,18 @@ def main() -> None:
     parser.add_argument("--gui", action="store_true", help="Open matplotlib board window during training")
     parser.add_argument("--gui-every", type=int, default=1, help="Refresh GUI every N env steps")
     parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=10,
+        help="Evaluate policy against random every N episodes (0 to disable)",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of episodes for evaluation",
+    )
+    parser.add_argument(
         "--log-updates-every",
         type=int,
         default=10,
@@ -148,6 +160,8 @@ def main() -> None:
         gui=gui,
         gui_every=args.gui_every,
         console_log_every=args.log_updates_every,
+        eval_every=args.eval_every,
+        eval_episodes=args.eval_episodes,
     )
 
     if gui is not None:

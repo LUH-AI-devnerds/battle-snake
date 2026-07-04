@@ -1,0 +1,2 @@
+# Runtime dependencies for the Blackout competition server (see server.py).
+-r agent/requirements.txt

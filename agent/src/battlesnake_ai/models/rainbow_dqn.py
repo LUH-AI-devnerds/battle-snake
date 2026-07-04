@@ -35,8 +35,7 @@ class RainbowDQN(BaseModel):
 
     def _features(self, obs_np: np.ndarray) -> torch.Tensor:
         x = self.preprocess_observation(obs_np)
-        device = next(self.parameters()).device
-        return self.backbone(x.to(device))
+        return self.backbone(x.to(self.support.device))
 
     def forward_dist(self, obs_np: np.ndarray) -> torch.Tensor:
         """Return log-probabilities over atoms: (batch, num_actions, num_atoms)."""
@@ -59,6 +58,12 @@ class RainbowDQN(BaseModel):
         with torch.no_grad():
             return self.forward(obs_np).detach().cpu().numpy()[0]
 
+    def reset_noise(self) -> None:
+        """Reset noise in all NoisyLinear layers (no-op if using standard Linear)."""
+        for m in self.modules():
+            if hasattr(m, "reset_noise") and m is not self:
+                m.reset_noise()
+
     @torch.no_grad()
     def project_distribution(
         self,
@@ -68,39 +73,35 @@ class RainbowDQN(BaseModel):
         gamma_n: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Categorical algorithm projection.
-        next_dist: (batch, num_actions, num_atoms) log-probs from target net at greedy actions
+        Categorical algorithm (C51) projection — fully vectorized.
+
+        next_dist: (batch, num_atoms) log-probs from target net at the greedy action
         rewards, dones, gamma_n: (batch,)
         Returns target log-prob (batch, num_atoms).
         """
         batch = rewards.shape[0]
-        prob = next_dist.exp()
+        prob = next_dist.exp()  # (batch, num_atoms)
+
+        # Project support: Tz = r + (1 - done) * gamma^n * z
         tz = rewards.unsqueeze(1) + (1.0 - dones.unsqueeze(1)) * gamma_n.unsqueeze(1) * self.support
         tz = tz.clamp(self.v_min, self.v_max)
-        b = (tz - self.v_min) / self.delta_z
-        l = b.floor().long()
-        u = b.ceil().long()
-        l = l.clamp(0, self.num_atoms - 1)
-        u = u.clamp(0, self.num_atoms - 1)
+        b = (tz - self.v_min) / self.delta_z  # (batch, num_atoms)
 
-        offset = (
-            torch.arange(batch, device=prob.device)
-            .unsqueeze(1)
-            .expand(batch, self.num_atoms)
-            * self.num_atoms
-        )
+        l = b.floor().long().clamp(0, self.num_atoms - 1)
+        u = b.ceil().long().clamp(0, self.num_atoms - 1)
+
+        # Compute mass to distribute to lower and upper bins
+        pl = prob * (u.float() - b)  # mass for lower bin
+        pu = prob * (b - l.float())  # mass for upper bin
+
+        # When l == u, all mass goes to that bin (pl and pu are both 0 otherwise)
+        eq = l == u
+        pl[eq] = prob[eq]
+        pu[eq] = 0.0
+
+        # Scatter-add into projected distribution
         proj = torch.zeros(batch, self.num_atoms, device=prob.device)
-        for i in range(self.num_atoms):
-            pl = prob[:, i] * (u[:, i] - b[:, i])
-            pu = prob[:, i] * (b[:, i] - l[:, i])
-            proj.view(-1).index_add_(0, (l[:, i] + offset[:, i]).view(-1), pl.view(-1))
-            eq = l[:, i] == u[:, i]
-            pl_eq = pl.clone()
-            pl_eq[eq] = 0.0
-            pu_eq = pu.clone()
-            pu_eq[eq] = 0.0
-            proj.view(-1).index_add_(0, (l[:, i] + offset[:, i]).view(-1), pl_eq.view(-1))
-            proj.view(-1).index_add_(0, (u[:, i] + offset[:, i]).view(-1), pu_eq.view(-1))
+        proj.scatter_add_(1, l, pl)
+        proj.scatter_add_(1, u, pu)
 
-        proj = proj.clamp(min=1e-5)
-        return torch.log(proj)
+        return torch.log(proj.clamp(min=1e-5))

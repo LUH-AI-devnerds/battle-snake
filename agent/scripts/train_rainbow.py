@@ -1,8 +1,12 @@
 import argparse
 import os
+import random
 import sys
 from dataclasses import asdict
 from datetime import datetime
+
+import numpy as np
+import torch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
@@ -44,11 +48,32 @@ def main() -> None:
     parser.add_argument("--beta-anneal-steps", type=int, default=50_000)
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--gui-every", type=int, default=1)
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=10,
+        help="Evaluate policy against random every N episodes (0 to disable)",
+    )
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=10,
+        help="Number of episodes for evaluation",
+    )
     parser.add_argument("--log-updates-every", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint .pt to resume from")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
 
     args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
 
     os.makedirs(args.log_dir, exist_ok=True)
     logger = setup_logger(log_dir=args.log_dir, log_name="rainbow_train")
@@ -65,6 +90,13 @@ def main() -> None:
 
     policy = RainbowDQN(in_channels=in_channels, num_atoms=args.num_atoms)
     target = RainbowDQN(in_channels=in_channels, num_atoms=args.num_atoms)
+
+    if args.resume:
+        ckpt = torch.load(args.resume, map_location="cpu")
+        state = ckpt.get("model_state_dict", ckpt)
+        policy.load_state_dict(state)
+        logger.info("Resumed from checkpoint %s", args.resume)
+
     replay = PrioritizedReplayBuffer(capacity=args.replay_size, alpha=args.per_alpha)
 
     metrics = DQNMetricsLogger(logger=logger, log_dir=args.log_dir, tensorboard_writer=tb_writer)
@@ -91,6 +123,8 @@ def main() -> None:
         gui=gui,
         gui_every=args.gui_every,
         console_log_every=args.log_updates_every,
+        eval_every=args.eval_every,
+        eval_episodes=args.eval_episodes,
     )
 
     ckpt_dir = (
@@ -109,11 +143,24 @@ def main() -> None:
             "mode": args.mode,
             "num_players": args.num_players,
             "num_atoms": args.num_atoms,
+            "run_id": run_id,
+            "total_episodes": args.episodes,
+            "seed": args.seed,
             "hyperparams": {
                 "gamma": args.gamma,
                 "n_step": args.n_step,
                 "lr": args.lr,
                 "per_alpha": args.per_alpha,
+                "batch_size": args.batch_size,
+                "replay_size": args.replay_size,
+                "epsilon_start": args.epsilon_start,
+                "epsilon_end": args.epsilon_end,
+                "epsilon_decay_steps": args.epsilon_decay_steps,
+                "beta_start": args.beta_start,
+                "beta_end": args.beta_end,
+                "beta_anneal_steps": args.beta_anneal_steps,
+                "train_after": args.train_after,
+                "target_update_every": args.target_update_every,
             },
         }
 

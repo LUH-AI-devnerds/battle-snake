@@ -39,6 +39,22 @@ class PPOMetricsLogger:
             entropy,
         )
 
+    def log_evaluation(
+        self,
+        episode: int,
+        *,
+        win_rate: float,
+        avg_steps: float,
+        avg_return: float,
+    ) -> None:
+        self.logger.info(
+            "Evaluation at Episode %s | win_rate=%.1f%% | avg_steps=%.1f | avg_return=%.4f",
+            episode,
+            win_rate * 100.0,
+            avg_steps,
+            avg_return,
+        )
+
 
 def _stack_obs(obs_list: List[np.ndarray]) -> np.ndarray:
     return np.stack(obs_list, axis=0)
@@ -65,6 +81,8 @@ class PPOTrainingLoop:
         gui: Optional[Any] = None,
         gui_every: int = 1,
         freeze_encoder: bool = False,
+        eval_every: int = 0,
+        eval_episodes: int = 10,
     ):
         self.env = env
         self.policy = policy
@@ -90,6 +108,8 @@ class PPOTrainingLoop:
             [p for p in self.policy.parameters() if p.requires_grad], lr=lr
         )
         self.total_env_steps = 0
+        self.eval_every = eval_every
+        self.eval_episodes = eval_episodes
 
     def _select_actions(self, obs: np.ndarray) -> Tuple[Tuple[int, ...], List[float], List[float]]:
         players = list(self.env.players_at_turn())
@@ -250,3 +270,103 @@ class PPOTrainingLoop:
             self.metrics.log_episode_end(episode_idx, ep_steps, ep_returns)
             if on_episode_end is not None:
                 on_episode_end(episode_idx)
+            if self.eval_every > 0 and episode_idx % self.eval_every == 0:
+                eval_stats = self.evaluate_policy(self.eval_episodes)
+                self.metrics.log_evaluation(
+                    episode_idx,
+                    win_rate=eval_stats["win_rate"],
+                    avg_steps=eval_stats["avg_steps"],
+                    avg_return=eval_stats["avg_return"],
+                )
+
+    def evaluate_policy(self, num_episodes: int = 10) -> Dict[str, float]:
+        import hisss
+        import random
+
+        was_training = self.policy.training
+        self.policy.eval()
+
+        eval_env = hisss.BattleSnakeGame(self.env.cfg)
+
+        wins = 0
+        total_steps = 0
+        total_returns = 0.0
+
+        for ep in range(num_episodes):
+            eval_env.reset()
+            done = False
+            steps = 0
+            ep_return = 0.0
+            last_rewards = None
+
+            # Policy controls seat 0
+            seat = 0
+
+            while not done:
+                obs, _, _ = eval_env.get_obs()
+                pat = list(eval_env.players_at_turn())
+
+                if seat not in pat:
+                    # Policy is dead, others play randomly
+                    actions = []
+                    for pid in pat:
+                        la = eval_env.available_actions(pid)
+                        actions.append(int(random.choice(la)))
+                    joint = tuple(actions)
+                    legal = [tuple(x) for x in eval_env.available_joint_actions()]
+                    if joint not in legal:
+                        joint = tuple(random.choice(legal))
+                    last_rewards, done, _ = eval_env.step(joint)
+                    steps += 1
+                    continue
+
+                actions = []
+                for row_idx, pid in enumerate(pat):
+                    if pid == seat:
+                        sl = obs[row_idx : row_idx + 1]
+                        with torch.no_grad():
+                            logits = self.policy.actor_logits(sl).detach().cpu().numpy()[0]
+                        la = eval_env.available_actions(pid)
+                        best = la[0]
+                        best_v = logits[best]
+                        for a in la[1:]:
+                            if logits[a] > best_v:
+                                best_v = logits[a]
+                                best = a
+                        actions.append(int(best))
+                    else:
+                        la = eval_env.available_actions(pid)
+                        actions.append(int(random.choice(la)))
+
+                joint = tuple(actions)
+                legal = [tuple(x) for x in eval_env.available_joint_actions()]
+                if joint not in legal:
+                    joint = tuple(random.choice(legal))
+
+                last_rewards, done, _ = eval_env.step(joint)
+                steps += 1
+
+            if last_rewards is not None:
+                rewards_list = [float(last_rewards[i]) for i in range(len(last_rewards))]
+                seat_reward = rewards_list[seat]
+                other_rewards = [rewards_list[i] for i in range(len(rewards_list)) if i != seat]
+                if len(other_rewards) == 0:
+                    wins += 1
+                elif seat_reward > max(other_rewards):
+                    wins += 1
+                total_returns += seat_reward
+
+            total_steps += steps
+
+        win_rate = wins / num_episodes
+        avg_steps = total_steps / num_episodes
+        avg_return = total_returns / num_episodes
+
+        self.policy.train(was_training)
+
+        return {
+            "win_rate": win_rate,
+            "avg_steps": avg_steps,
+            "avg_return": avg_return,
+        }
+
