@@ -61,7 +61,12 @@ class SnakeRuntime:
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
         self._pid_by_snake_id: Dict[str, int] = {}
+        # Cache envs by (num_players, width, height). hisss envs are never closed
+        # and recreated at runtime: doing so double-frees native memory and crashes
+        # the whole process. For Blackout only one config (4, 15, 15) is ever used.
+        self._env_cache: Dict[Tuple[int, int, int], Any] = {}
         self._env = self._make_env()
+        self._env_cache[(self._env.num_players, self._env.cfg.w, self._env.cfg.h)] = self._env
         self._your_pid = 0
         logger.info(
             "Loaded %s algorithm=%s mode=%s in_channels=%s device=%s",
@@ -77,53 +82,67 @@ class SnakeRuntime:
         num_players = self.meta.get("num_players")
         return make_env(mode, num_players=num_players)
 
-    def _rebuild_env_if_needed(self, num_players: int, width: int, height: int) -> None:
-        cfg = self._env.cfg
-        if (
-            self._env.num_players == num_players
-            and cfg.w == width
-            and cfg.h == height
-        ):
-            return
-        logger.warning(
-            "Rebuilding env: players %s->%s board %sx%s->%sx%s",
-            self._env.num_players,
-            num_players,
-            cfg.w,
-            cfg.h,
-            width,
-            height,
-        )
-        mode = self.meta.get("mode", "restricted_standard")
-        self._env.close()
-        self._env = make_env(mode, num_players=num_players)
-        self._env.cfg.w = width
-        self._env.cfg.h = height
+    def _select_env(self, num_players: int, width: int, height: int) -> Any:
+        """Return a cached env for this config, building it once if needed.
+
+        Never closes/recreates an existing env: the native hisss close+rebuild
+        cycle double-frees memory and aborts the process. Envs are cached and
+        kept alive for the lifetime of the runtime instead.
+        """
+        num_players = max(1, int(num_players))
+        key = (num_players, width, height)
+        env = self._env_cache.get(key)
+        if env is None:
+            if (self._env.num_players, self._env.cfg.w, self._env.cfg.h) != key:
+                logger.warning(
+                    "Building env for players=%s board=%sx%s (current %s players %sx%s)",
+                    num_players,
+                    width,
+                    height,
+                    self._env.num_players,
+                    self._env.cfg.w,
+                    self._env.cfg.h,
+                )
+            mode = self.meta.get("mode", "restricted_standard")
+            env = make_env(mode, num_players=num_players)
+            if env.cfg.w != width or env.cfg.h != height:
+                env.cfg.w = width
+                env.cfg.h = height
+            self._env_cache[key] = env
+        self._env = env
+        return env
 
     def on_game_start(self, payload: Mapping[str, Any]) -> None:
-        self._pid_by_snake_id = assign_player_ids(payload)
-        state, your_pid = request_to_state(payload, pid_by_snake_id=self._pid_by_snake_id)
-        self._your_pid = your_pid
-        width, height = _board_dims(payload)
-        self._rebuild_env_if_needed(len(self._pid_by_snake_id), width, height)
-        self._env.set_state(state)
+        try:
+            self._pid_by_snake_id = assign_player_ids(payload)
+            if not self._pid_by_snake_id:
+                return
+            state, your_pid = request_to_state(payload, pid_by_snake_id=self._pid_by_snake_id)
+            self._your_pid = your_pid
+            width, height = _board_dims(payload)
+            self._select_env(len(self._pid_by_snake_id), width, height)
+            self._env.set_state(state)
+        except Exception:
+            logger.exception("on_game_start failed; will re-initialize on first move")
 
     def on_game_end(self, payload: Mapping[str, Any]) -> None:
         del payload  # nothing to persist for offline training in the server process
 
     def decide_move(self, payload: Mapping[str, Any]) -> str:
-        if not self._pid_by_snake_id:
-            self.on_game_start(payload)
-
-        state, your_pid = request_to_state(payload, pid_by_snake_id=self._pid_by_snake_id)
-        self._your_pid = your_pid
-        width, height = _board_dims(payload)
-        self._rebuild_env_if_needed(len(self._pid_by_snake_id), width, height)
-
-        if not state.snakes_alive[your_pid]:
-            return self._random_legal_or_fallback(state, your_pid)
-
         try:
+            if not self._pid_by_snake_id:
+                self.on_game_start(payload)
+            if not self._pid_by_snake_id:
+                return self.fallback_move
+
+            state, your_pid = request_to_state(payload, pid_by_snake_id=self._pid_by_snake_id)
+            self._your_pid = your_pid
+            width, height = _board_dims(payload)
+            self._select_env(len(self._pid_by_snake_id), width, height)
+
+            if not state.snakes_alive[your_pid]:
+                return self._random_legal_or_fallback(state, your_pid)
+
             self._env.set_state(state)
             obs, _, _ = self._env.get_obs()
             players_here = list(self._env.players_at_turn())
@@ -169,8 +188,13 @@ class SnakeRuntime:
         return self.fallback_move
 
     def close(self) -> None:
-        if self._env is not None and not self._env.is_closed:
-            self._env.close()
+        for env in self._env_cache.values():
+            try:
+                if env is not None and not env.is_closed:
+                    env.close()
+            except Exception:
+                logger.exception("Error closing env during shutdown")
+        self._env_cache.clear()
 
 
 def default_checkpoint_from_env() -> Path:
