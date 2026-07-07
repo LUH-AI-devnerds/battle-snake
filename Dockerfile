@@ -11,11 +11,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py ./
 COPY agent/src/battlesnake_ai ./agent/src/battlesnake_ai
-COPY logs/checkpoints/ ./logs/checkpoints/
+COPY best_checkpoint/ ./best_checkpoint/
 
 ENV PYTHONPATH=/app/agent/src
-ENV BATTLE_SNAKE_CHECKPOINT=logs/checkpoints/rainbow_20260602_182838_ep75.pt
-ENV SNAKE_AUTHOR=Battle Snake
+ENV BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260704_125842_ep1600.pt
+ENV SNAKE_AUTHOR=the sea snake
 ENV SNAKE_COLOR=#4488ff
 
 EXPOSE 8000
