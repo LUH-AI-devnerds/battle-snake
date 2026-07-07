@@ -14,9 +14,9 @@ COPY agent/src/battlesnake_ai ./agent/src/battlesnake_ai
 COPY best_checkpoint/ ./best_checkpoint/
 
 ENV PYTHONPATH=/app/agent/src
-ENV BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260704_125842_ep1600.pt
-ENV SNAKE_AUTHOR=the sea snake
-ENV SNAKE_COLOR=#4488ff
+ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/rainbow_20260704_125842_ep1600.pt"
+ENV SNAKE_AUTHOR="the sea snake"
+ENV SNAKE_COLOR="#4488ff"
 
 EXPOSE 8000
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
