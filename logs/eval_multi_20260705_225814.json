@@ -1,0 +1,51 @@
+{
+  "mode": "restricted_standard",
+  "episodes": 200,
+  "seed": 42,
+  "results": [
+    {
+      "agent_name": "Agent 0: rainbow(rainbow_20260704_125842_ep1600.pt)",
+      "1st": 102,
+      "2nd": 68,
+      "3rd": 16,
+      "4th": 14,
+      "win_rate": 0.51,
+      "avg_score": 1.36,
+      "avg_survival": 199.645,
+      "avg_length": 12.135
+    },
+    {
+      "agent_name": "Agent 1: rainbow(rainbow_20260602_182838_ep1000.pt)",
+      "1st": 21,
+      "2nd": 61,
+      "3rd": 63,
+      "4th": 55,
+      "win_rate": 0.105,
+      "avg_score": 0.515,
+      "avg_survival": 145.28,
+      "avg_length": 6.91
+    },
+    {
+      "agent_name": "Agent 2: random",
+      "1st": 44,
+      "2nd": 28,
+      "3rd": 62,
+      "4th": 66,
+      "win_rate": 0.22,
+      "avg_score": 0.58,
+      "avg_survival": 122.72,
+      "avg_length": 7.88
+    },
+    {
+      "agent_name": "Agent 3: random",
+      "1st": 33,
+      "2nd": 43,
+      "3rd": 59,
+      "4th": 65,
+      "win_rate": 0.165,
+      "avg_score": 0.545,
+      "avg_survival": 121.115,
+      "avg_length": 7.465
+    }
+  ]
+}

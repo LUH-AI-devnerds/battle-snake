@@ -1,0 +1,27 @@
+{
+  "algorithm": "rainbow",
+  "in_channels": 17,
+  "num_actions": 4,
+  "mode": "restricted_standard",
+  "num_players": null,
+  "num_atoms": 51,
+  "run_id": "20260704_125842",
+  "total_episodes": 5000,
+  "seed": 42,
+  "hyperparams": {
+    "gamma": 0.99,
+    "n_step": 3,
+    "lr": 0.0001,
+    "per_alpha": 0.6,
+    "batch_size": 128,
+    "replay_size": 80000,
+    "epsilon_start": 0.2,
+    "epsilon_end": 0.05,
+    "epsilon_decay_steps": 30000,
+    "beta_start": 0.4,
+    "beta_end": 1.0,
+    "beta_anneal_steps": 30000,
+    "train_after": 1000,
+    "target_update_every": 1000
+  }
+}

@@ -4,3 +4,4 @@ venv/
 .venv/
 agent/logs/
 *.pt
+!best_checkpoint/*.pt
