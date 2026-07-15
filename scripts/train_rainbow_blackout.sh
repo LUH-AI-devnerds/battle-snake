@@ -55,6 +55,7 @@ echo "Start: $(date -Is)"
 python -c "import torch; print('PyTorch', torch.__version__, '| CUDA', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
 python scripts/train_rainbow.py \
+  --resume "${REPO}/best_checkpoint/rainbow_20260704_125842_ep1600.pt" \
   --mode restricted_standard \
   --episodes 5000 \
   --seed 42 \
@@ -78,10 +79,18 @@ python scripts/train_rainbow.py \
   --eval-seed 42 \
   --self-eval-every 250 \
   --self-eval-episodes 30 \
+  --survival-shaping \
+  --survival-strategy aggressive \
+  --living-bonus 0.01 \
+  --length-penalty 0.05 \
+  --proximity-penalty 0.02 \
   --log-updates-every 100
 # Resume workflow (training state now restored on --resume):
 #   --resume logs/checkpoints/rainbow_<run_id>_best.pt
 # This reloads model + optimizer + total_env_steps + best_win_rate, so epsilon/beta
 # annealing continues from the saved step instead of restarting.
+#
+# Aggressive shaping: reward growth + closing on shorter prey; still penalize
+# closing on equal/longer heads. Pair with SURVIVAL_STRATEGY=aggressive on deploy.
 
 echo "End: $(date -Is)"

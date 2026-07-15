@@ -84,6 +84,26 @@ def main() -> None:
         default=20,
         help="Number of episodes for past-self drift eval",
     )
+    parser.add_argument(
+        "--survival-shaping",
+        action="store_true",
+        help="Reward shaping for grow-then-hunt (or defensive if --survival-strategy defensive)",
+    )
+    parser.add_argument(
+        "--survival-strategy",
+        type=str,
+        default="aggressive",
+        choices=["aggressive", "defensive"],
+        help="aggressive=grow then hunt shorter snakes; defensive=avoid fights and growth",
+    )
+    parser.add_argument("--living-bonus", type=float, default=0.01)
+    parser.add_argument(
+        "--length-penalty",
+        type=float,
+        default=0.05,
+        help="Growth magnitude: bonus when aggressive, penalty when defensive",
+    )
+    parser.add_argument("--proximity-penalty", type=float, default=0.02)
     parser.add_argument("--log-updates-every", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
@@ -168,6 +188,11 @@ def main() -> None:
         eval_seed=args.eval_seed,
         self_eval_every=args.self_eval_every,
         self_eval_episodes=args.self_eval_episodes,
+        survival_shaping=args.survival_shaping,
+        living_bonus=args.living_bonus,
+        length_penalty=args.length_penalty,
+        proximity_penalty=args.proximity_penalty,
+        survival_strategy=args.survival_strategy,
     )
 
     if resume_payload is not None:
@@ -223,6 +248,11 @@ def main() -> None:
                 "eval_seed": args.eval_seed,
                 "self_eval_every": args.self_eval_every,
                 "self_eval_episodes": args.self_eval_episodes,
+                "survival_shaping": args.survival_shaping,
+                "survival_strategy": args.survival_strategy,
+                "living_bonus": args.living_bonus,
+                "length_penalty": args.length_penalty,
+                "proximity_penalty": args.proximity_penalty,
             },
         }
 

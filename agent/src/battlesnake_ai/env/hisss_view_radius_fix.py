@@ -1,16 +1,29 @@
 """
-Patch hisss ``BattleSnakeGame.get_obs`` view-radius block: ``result`` axis 0 follows
-``players_at_turn()`` order, but hisss indexed rows by raw player id (breaks when ids
-are non-contiguous after eliminations). Idempotent file patch on ``hisss.game.battlesnake``.
+Patch hisss ``BattleSnakeGame.get_obs`` view-radius block.
+
+``result`` axis 0 follows ``players_at_turn()`` order (alive snakes only), but
+stock hisss indexes rows by raw player id. After eliminations that becomes an
+IndexError (e.g. players ``[1, 3]`` with ``result.shape[0] == 2``), and our
+server catches it and returns ``FALLBACK_MOVE=up`` every turn.
+
+File mutation works locally but fails silently on read-only containers
+(Railway). Prefer rebinding ``get_obs`` from a patched source string in memory;
+also try writing the file when the filesystem allows it.
 """
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 _MARK_BEGIN = "# --- battlesnake_ai: view_radius row_idx fix begin ---"
 _MARK_END = "# --- battlesnake_ai: view_radius row_idx fix end ---"
+_NEEDLE = "            for p_self in self.players_at_turn():"
+_END_NEEDLE = "            # make mask layer"
+_ATTR = "_bs_ai_view_radius_row_fix"
 
 
 def _fixed_loop_source() -> str:
@@ -84,36 +97,78 @@ def _fixed_loop_source() -> str:
 """
 
 
+def _patch_source(text: str) -> Optional[str]:
+    if _MARK_BEGIN in text:
+        return text
+    if "for row_idx, p_self in enumerate(self.players_at_turn()):" in text:
+        return text  # already fixed upstream
+    i0 = text.find(_NEEDLE)
+    i1 = text.find(_END_NEEDLE, i0) if i0 >= 0 else -1
+    if i0 < 0 or i1 < 0:
+        return None
+    return text[:i0] + _MARK_BEGIN + _fixed_loop_source() + "\n" + _MARK_END + "\n" + text[i1:]
+
+
+def _extract_get_obs_source(module_text: str) -> str:
+    lines = module_text.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if line.startswith("    def get_obs("))
+    end = next(
+        j
+        for j in range(start + 1, len(lines))
+        if lines[j].startswith("    def ")
+    )
+    # Dedent one class level so `exec` defines a free function.
+    body = lines[start:end]
+    return "".join(line[4:] if line.startswith("    ") else line for line in body)
+
+
+def _rebind_get_obs(module, patched_text: str) -> None:
+    ns = dict(vars(module))
+    exec(compile(_extract_get_obs_source(patched_text), "<hisss_get_obs_fixed>", "exec"), ns)
+    module.BattleSnakeGame.get_obs = ns["get_obs"]
+    setattr(module.BattleSnakeGame, _ATTR, True)
+
+
 def apply_view_radius_row_index_fix() -> bool:
     """
-    Patch installed ``hisss`` once if needed. Returns True if file was modified or already patched.
+    Ensure ``get_obs`` uses row indices after eliminations.
+
+    Returns True if the fix is active (already applied, file patched, or rebound).
     """
     try:
         import hisss.game.battlesnake as bsm
     except ImportError:
         return False
 
-    path = Path(bsm.__file__).resolve()
-    text = path.read_text(encoding="utf-8")
-    if _MARK_BEGIN in text:
+    if getattr(bsm.BattleSnakeGame, _ATTR, False):
         return True
 
-    needle = "            for p_self in self.players_at_turn():"
-    if needle not in text:
+    path = Path(bsm.__file__).resolve()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("Cannot read hisss battlesnake.py for view-radius fix")
         return False
 
-    # Original buggy block ends before "            # make mask layer"
-    end_needle = "            # make mask layer"
-    i0 = text.find(needle)
-    i1 = text.find(end_needle, i0)
-    if i0 < 0 or i1 < 0:
+    patched = _patch_source(text)
+    if patched is None:
+        logger.warning(
+            "hisss view-radius patch needle not found; /move may fall back after eliminations"
+        )
         return False
 
-    replacement = _MARK_BEGIN + _fixed_loop_source() + "\n" + _MARK_END + "\n"
-    new_text = text[:i0] + replacement + text[i1:]
-    path.write_text(new_text, encoding="utf-8")
+    if patched != text:
+        try:
+            path.write_text(patched, encoding="utf-8")
+        except OSError:
+            logger.info(
+                "hisss site-packages not writable; applying view-radius fix in memory"
+            )
 
-    import importlib
+    try:
+        _rebind_get_obs(bsm, patched)
+    except Exception:
+        logger.exception("Failed to rebind patched hisss.get_obs")
+        return False
 
-    importlib.reload(bsm)
     return True

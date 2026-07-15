@@ -23,12 +23,20 @@ from battlesnake_ai.inference.api_adapter import (
     assign_player_ids,
     request_to_state,
 )
+from battlesnake_ai.inference.survival import select_survival_action
 from battlesnake_ai.models.dqn import DQN
 from battlesnake_ai.models.ppo_policy import PPOPolicy
 from battlesnake_ai.models.rainbow_dqn import RainbowDQN
 from battlesnake_ai.training.action_selection import masked_argmax
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _resolve_checkpoint_path(path: str | Path) -> Path:
@@ -60,6 +68,9 @@ class SnakeRuntime:
         self.device = dev
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
+        self.survival_filter = _env_flag("SURVIVAL_FILTER", True)
+        self.hunger_health = int(os.environ.get("SURVIVAL_HUNGER_HEALTH", "35"))
+        self.combat_strategy = os.environ.get("SURVIVAL_STRATEGY", "aggressive").strip().lower()
         self._pid_by_snake_id: Dict[str, int] = {}
         self._fallback_count = 0
         # Cache envs by (num_players, width, height). hisss envs are never closed
@@ -77,7 +88,8 @@ class SnakeRuntime:
         except Exception:
             pass
         logger.info(
-            "Loaded %s algorithm=%s mode=%s in_channels=%s device=%s hisss=%s fallback=%s",
+            "Loaded %s algorithm=%s mode=%s in_channels=%s device=%s hisss=%s "
+            "fallback=%s survival_filter=%s hunger_health=%s strategy=%s",
             ckpt,
             self.meta.get("algorithm"),
             self.meta.get("mode"),
@@ -85,6 +97,9 @@ class SnakeRuntime:
             dev,
             hisss_ver,
             self.fallback_move,
+            self.survival_filter,
+            self.hunger_health,
+            self.combat_strategy,
         )
 
     def _make_env(self) -> Any:
@@ -139,6 +154,8 @@ class SnakeRuntime:
         del payload  # nothing to persist for offline training in the server process
 
     def decide_move(self, payload: Mapping[str, Any]) -> str:
+        state = None
+        your_pid = self._your_pid
         try:
             if not self._pid_by_snake_id:
                 self.on_game_start(payload)
@@ -174,28 +191,61 @@ class SnakeRuntime:
         except Exception:
             self._fallback_count += 1
             logger.exception(
-                "Inference failed; using fallback move=%s (fallback_count=%s). "
-                "If this happens every turn the snake will walk in one direction.",
-                self.fallback_move,
+                "Inference failed; using legal/random fallback (fallback_count=%s). "
+                "If this happens every turn, check hisss view-radius patch / logs.",
                 self._fallback_count,
             )
+            if state is not None:
+                return self._random_legal_or_fallback(state, your_pid)
             return self.fallback_move
 
     def _select_action(self, obs_slice: np.ndarray, pid: int) -> int:
-        la = self._env.available_actions(pid)
+        la = list(self._env.available_actions(pid))
+        if not la:
+            return 0
+
         if isinstance(self.model, (DQN, RainbowDQN)):
             with torch.no_grad():
                 q = self.model(obs_slice).detach().cpu().numpy()[0]
+            if self.survival_filter:
+                return select_survival_action(
+                    self._env,
+                    pid,
+                    q,
+                    legal=la,
+                    hunger_health=self.hunger_health,
+                    strategy=self.combat_strategy,
+                )
             return masked_argmax(q, la)
+
         if isinstance(self.model, PPOPolicy):
             with torch.no_grad():
                 logits = self.model.actor_logits(obs_slice)[0].detach().cpu().numpy()
+            if self.survival_filter:
+                return select_survival_action(
+                    self._env,
+                    pid,
+                    logits,
+                    legal=la,
+                    hunger_health=self.hunger_health,
+                    strategy=self.combat_strategy,
+                )
             mask = np.full(logits.shape, -1e9, dtype=np.float32)
             for a in la:
                 mask[a] = logits[a]
             return int(mask.argmax())
+
         with torch.no_grad():
             logits = self.model(obs_slice).detach().cpu().numpy()[0]
+        if self.survival_filter:
+            return select_survival_action(
+                self._env,
+                pid,
+                logits,
+                legal=la,
+                hunger_health=self.hunger_health,
+                strategy=self.combat_strategy,
+            )
         return masked_argmax(logits, la)
 
     def _random_legal_or_fallback(self, state: Any, your_pid: int) -> str:

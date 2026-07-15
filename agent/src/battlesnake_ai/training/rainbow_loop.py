@@ -60,6 +60,11 @@ class RainbowTrainingLoop:
         eval_seed: Optional[int] = None,
         self_eval_every: int = 0,
         self_eval_episodes: int = 20,
+        survival_shaping: bool = False,
+        living_bonus: float = 0.01,
+        length_penalty: float = 0.05,
+        proximity_penalty: float = 0.02,
+        survival_strategy: str = "aggressive",
     ):
         self.env = env
         self.policy = policy_net
@@ -88,6 +93,11 @@ class RainbowTrainingLoop:
         self.eval_seed = eval_seed
         self.self_eval_every = self_eval_every
         self.self_eval_episodes = self_eval_episodes
+        self.survival_shaping = survival_shaping
+        self.living_bonus = float(living_bonus)
+        self.length_penalty = float(length_penalty)
+        self.proximity_penalty = float(proximity_penalty)
+        self.survival_strategy = (survival_strategy or "aggressive").strip().lower()
         self.lr = lr
 
         self.policy.to(self.device)
@@ -101,6 +111,78 @@ class RainbowTrainingLoop:
         self.best_episode: int = 0
         self._nstep_buf: Dict[int, deque] = {}
         self._frozen_opponent: Optional[RainbowDQN] = None
+
+    def _min_head_dist(
+        self,
+        state: Any,
+        pid: int,
+        *,
+        only_ge: bool = False,
+        only_lt: bool = False,
+    ) -> float:
+        body = state.snake_pos.get(pid) or []
+        if not body:
+            return float("inf")
+        hx, hy = int(body[0][0]), int(body[0][1])
+        our_len = int(state.snake_len[pid])
+        best = float("inf")
+        for oid, alive in enumerate(state.snakes_alive):
+            if not alive or oid == pid:
+                continue
+            ob = state.snake_pos.get(oid) or []
+            if not ob:
+                continue
+            elen = int(state.snake_len[oid])
+            if only_ge and elen < our_len:
+                continue
+            if only_lt and elen >= our_len:
+                continue
+            ox, oy = int(ob[0][0]), int(ob[0][1])
+            d = abs(ox - hx) + abs(oy - hy)
+            if d < best:
+                best = float(d)
+        return best
+
+    def _reshape_reward(
+        self,
+        pid: int,
+        base_reward: float,
+        *,
+        st_before: Any,
+        st_after: Any,
+        died: bool,
+    ) -> float:
+        """Optional reward shaping for grow-then-hunt or pure survival."""
+        if not self.survival_shaping:
+            return float(base_reward)
+        r = float(base_reward)
+        if died:
+            return r
+
+        aggressive = self.survival_strategy not in {"defensive", "survive", "survival"}
+        r += self.living_bonus
+
+        len_before = int(st_before.snake_len[pid])
+        len_after = int(st_after.snake_len[pid]) if st_after.snakes_alive[pid] else len_before
+        if len_after > len_before:
+            # Aggressive: reward growth (size enables hunting). Defensive: penalize.
+            r += self.length_penalty if aggressive else -self.length_penalty
+
+        if st_after.snakes_alive[pid]:
+            # Avoid closing on equal/longer heads.
+            d0 = self._min_head_dist(st_before, pid, only_ge=True)
+            d1 = self._min_head_dist(st_after, pid, only_ge=True)
+            if np.isfinite(d0) and np.isfinite(d1) and d1 < d0:
+                r -= self.proximity_penalty * (d0 - d1)
+
+            if aggressive:
+                # Reward closing on shorter prey (hunt).
+                p0 = self._min_head_dist(st_before, pid, only_lt=True)
+                p1 = self._min_head_dist(st_after, pid, only_lt=True)
+                if np.isfinite(p0) and np.isfinite(p1) and p1 < p0:
+                    r += self.proximity_penalty * (p0 - p1)
+
+        return float(np.clip(r, -1.0, 1.0))
 
     def epsilon_by_step(self) -> float:
         if self.total_env_steps >= self.epsilon_decay_steps:
@@ -296,6 +378,19 @@ class RainbowTrainingLoop:
             rewards, done, _ = self.env.step(actions)
             turns += 1
             self.total_env_steps += 1
+            st_after = self.env.get_state()
+            if self.survival_shaping:
+                shaped = np.array(rewards, dtype=np.float64, copy=True)
+                for pid in range(len(shaped)):
+                    died = done or (not st_after.snakes_alive[pid])
+                    shaped[pid] = self._reshape_reward(
+                        pid,
+                        float(shaped[pid]),
+                        st_before=st_before,
+                        st_after=st_after,
+                        died=died,
+                    )
+                rewards = shaped
             ep_returns += rewards
 
             self.metrics.log_env_step_reward(
@@ -568,6 +663,11 @@ class RainbowTrainingLoop:
             "beta_end": self.beta_end,
             "eval_every": self.eval_every,
             "eval_episodes": self.eval_episodes,
+            "survival_shaping": self.survival_shaping,
+            "living_bonus": self.living_bonus,
+            "length_penalty": self.length_penalty,
+            "proximity_penalty": self.proximity_penalty,
+            "survival_strategy": self.survival_strategy,
         }
         self.metrics.log_training_startup(cfg)
 

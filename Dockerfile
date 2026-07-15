@@ -18,6 +18,10 @@ ENV PYTHONPATH=/app/agent/src
 ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/rainbow_20260704_125842_ep1600.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"
+# Survival/combat layer: avoid equal/longer heads; grow then hunt shorter snakes.
+ENV SURVIVAL_FILTER="1"
+ENV SURVIVAL_HUNGER_HEALTH="35"
+ENV SURVIVAL_STRATEGY="aggressive"
 
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8000}"]
