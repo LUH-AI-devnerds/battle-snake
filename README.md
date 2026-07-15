@@ -233,9 +233,11 @@ tensorboard --logdir agent/logs/tensorboard
 
 This repo includes a competition-ready server for [Battlesnake Blackout 2026](https://www.tnt.uni-hannover.de/bs-blackout-2026/) ([API docs](https://www.tnt.uni-hannover.de/bs-blackout-2026/doc)).
 
-Blackout runs **restricted standard** games: 15×15 board, 4 snakes, **view radius 5**. Use a checkpoint trained with `--mode restricted_standard` (17 input channels), for example:
+Blackout runs **restricted standard** games: 15×15 board, 4 snakes, **view radius 5**. Use a checkpoint trained with `--mode restricted_standard` (17 input channels). The Docker image ships:
 
-`logs/checkpoints/rainbow_20260602_182838_ep75.pt`
+`best_checkpoint/rainbow_20260704_125842_ep1600.pt`
+
+Requires **hisss ≥ 1.3.0** (`requirements-server.txt`). With older hisss the server would catch a `BattleSnakeState` constructor error on every `/move` and silently return `FALLBACK_MOVE=up`, making the snake walk north into the wall.
 
 ### Endpoints
 
@@ -254,7 +256,7 @@ All handlers must respond in **under 500 ms**. The bundled Rainbow policy typica
 cp .env.example .env   # set SNAKE_AUTHOR to your registered snake name
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=agent/src
-export BATTLE_SNAKE_CHECKPOINT=logs/checkpoints/rainbow_20260602_182838_ep75.pt
+export BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260704_125842_ep1600.pt
 
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
@@ -262,22 +264,25 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 Smoke-test against a real Blackout replay frame:
 
 ```bash
-python scripts/test_blackout_api.py
+BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260704_125842_ep1600.pt \
+  python scripts/test_blackout_api.py
 ```
 
 ### Deploy
 
-**Docker** (includes checkpoint under `logs/checkpoints/`):
+**Docker** (bundles `best_checkpoint/`):
 
 ```bash
 docker build -t battle-snake .
 docker run -p 8000:8000 \
-  -e SNAKE_AUTHOR="Your Registered Name" \
+  -e SNAKE_AUTHOR="the sea snake" \
   -e SNAKE_COLOR="#4488ff" \
   battle-snake
 ```
 
-**Railway / Render / Heroku**: use the included `Procfile` (`web: uvicorn server:app ...`). Set `SNAKE_AUTHOR`, `BATTLE_SNAKE_CHECKPOINT`, and expose port `8000`.
+After code changes, **rebuild and redeploy** the image — a running container will keep serving the old broken `/move` path until replaced.
+
+**Railway / Render / Heroku**: use the included `Procfile` (`web: uvicorn server:app ...`). Set `SNAKE_AUTHOR`, `BATTLE_SNAKE_CHECKPOINT`, and expose port `8000`. Ensure the host installs from `requirements-server.txt` (hisss≥1.3.0).
 
 Register on the Blackout site and submit your public HTTPS URL. The `author` field from `GET /` must match your registered snake name exactly.
 

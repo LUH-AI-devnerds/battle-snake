@@ -61,6 +61,7 @@ class SnakeRuntime:
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
         self._pid_by_snake_id: Dict[str, int] = {}
+        self._fallback_count = 0
         # Cache envs by (num_players, width, height). hisss envs are never closed
         # and recreated at runtime: doing so double-frees native memory and crashes
         # the whole process. For Blackout only one config (4, 15, 15) is ever used.
@@ -68,13 +69,22 @@ class SnakeRuntime:
         self._env = self._make_env()
         self._env_cache[(self._env.num_players, self._env.cfg.w, self._env.cfg.h)] = self._env
         self._your_pid = 0
+        hisss_ver = "unknown"
+        try:
+            import importlib.metadata as _imd
+
+            hisss_ver = _imd.version("hisss")
+        except Exception:
+            pass
         logger.info(
-            "Loaded %s algorithm=%s mode=%s in_channels=%s device=%s",
+            "Loaded %s algorithm=%s mode=%s in_channels=%s device=%s hisss=%s fallback=%s",
             ckpt,
             self.meta.get("algorithm"),
             self.meta.get("mode"),
             self.meta.get("in_channels"),
             dev,
+            hisss_ver,
+            self.fallback_move,
         )
 
     def _make_env(self) -> Any:
@@ -144,6 +154,11 @@ class SnakeRuntime:
                 return self._random_legal_or_fallback(state, your_pid)
 
             self._env.set_state(state)
+            # hisss raises on get_obs() once the game is already over (e.g. we
+            # received a /move after the board reached a terminal state).
+            if self._env.is_terminal():
+                return self._random_legal_or_fallback(state, your_pid)
+
             obs, _, _ = self._env.get_obs()
             players_here = list(self._env.players_at_turn())
             if your_pid not in players_here:
@@ -157,7 +172,13 @@ class SnakeRuntime:
                 action = int(random.choice(la)) if la else 0
             return action_index_to_move(action)
         except Exception:
-            logger.exception("Inference failed; using fallback move")
+            self._fallback_count += 1
+            logger.exception(
+                "Inference failed; using fallback move=%s (fallback_count=%s). "
+                "If this happens every turn the snake will walk in one direction.",
+                self.fallback_move,
+                self._fallback_count,
+            )
             return self.fallback_move
 
     def _select_action(self, obs_slice: np.ndarray, pid: int) -> int:

@@ -23,17 +23,12 @@ def _fixed_loop_source() -> str:
                 cur_mask = (distance_map <= self.cfg.view_radius).astype(float)
                 masks.append(cur_mask)
                 if "current_food" in self.layer_explanation:
-                    food_idx = self.layer_explanation["current_food"]
-                    cur_layer = result[row_idx, :, :, food_idx]
-                    result[row_idx, :, :, food_idx] = cur_layer * cur_mask
-                    # Food that spawned this turn is always visible for one step
-                    if new_food_pos is not None and len(new_food_pos) > 0:
-                        spawn_mask = self._new_food_obs_mask(
-                            new_food_pos, p_self, num_rot, flip
-                        )
-                        result[row_idx, :, :, food_idx] = np.maximum(
-                            result[row_idx, :, :, food_idx], spawn_mask
-                        )
+                    cur_layer = result[
+                        row_idx, :, :, self.layer_explanation["current_food"]
+                    ]
+                    result[row_idx, :, :, self.layer_explanation["current_food"]] = (
+                        cur_layer * cur_mask
+                    )
                 for p in range(
                     1, self.num_players
                 ):  # do not restrict view on own player

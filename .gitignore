@@ -3,5 +3,7 @@ __pycache__
 venv/
 .venv/
 agent/logs/
+logs/
 *.pt
 !best_checkpoint/*.pt
+*.jsonl

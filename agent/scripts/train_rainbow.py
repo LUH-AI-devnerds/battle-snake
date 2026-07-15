@@ -4,6 +4,7 @@ import random
 import sys
 from dataclasses import asdict
 from datetime import datetime
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -36,12 +37,17 @@ def main() -> None:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--train-after", type=int, default=500)
+    parser.add_argument("--train-every", type=int, default=1, help="Run an optimizer step every N env steps")
     parser.add_argument("--target-update-every", type=int, default=500)
+    parser.add_argument("--max-grad-norm", type=float, default=10.0)
     parser.add_argument("--epsilon-decay-steps", type=int, default=50_000)
     parser.add_argument("--epsilon-start", type=float, default=1.0)
     parser.add_argument("--epsilon-end", type=float, default=0.05)
-    parser.add_argument("--n-step", type=int, default=3, help="n-step discount exponent on bootstrap")
+    parser.add_argument("--n-step", type=int, default=3, help="n-step return horizon (proper accumulation)")
     parser.add_argument("--num-atoms", type=int, default=51)
+    parser.add_argument("--v-min", type=float, default=-1.0, help="C51 support minimum")
+    parser.add_argument("--v-max", type=float, default=1.0, help="C51 support maximum")
+    parser.add_argument("--feature-dim", type=int, default=64, help="CNN backbone feature dimension")
     parser.add_argument("--per-alpha", type=float, default=0.6)
     parser.add_argument("--beta-start", type=float, default=0.4)
     parser.add_argument("--beta-end", type=float, default=1.0)
@@ -59,6 +65,24 @@ def main() -> None:
         type=int,
         default=10,
         help="Number of episodes for evaluation",
+    )
+    parser.add_argument(
+        "--eval-seed",
+        type=int,
+        default=None,
+        help="Base seed for deterministic eval episodes (reduces checkpoint-ranking noise)",
+    )
+    parser.add_argument(
+        "--self-eval-every",
+        type=int,
+        default=0,
+        help="Evaluate vs frozen past-self every N episodes (0 to disable, drift check)",
+    )
+    parser.add_argument(
+        "--self-eval-episodes",
+        type=int,
+        default=20,
+        help="Number of episodes for past-self drift eval",
     )
     parser.add_argument("--log-updates-every", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=0)
@@ -88,13 +112,27 @@ def main() -> None:
     obs, _, _ = env.get_obs()
     in_channels = obs.shape[-1]
 
-    policy = RainbowDQN(in_channels=in_channels, num_atoms=args.num_atoms)
-    target = RainbowDQN(in_channels=in_channels, num_atoms=args.num_atoms)
+    policy = RainbowDQN(
+        in_channels=in_channels,
+        num_atoms=args.num_atoms,
+        v_min=args.v_min,
+        v_max=args.v_max,
+        feature_dim=args.feature_dim,
+    )
+    target = RainbowDQN(
+        in_channels=in_channels,
+        num_atoms=args.num_atoms,
+        v_min=args.v_min,
+        v_max=args.v_max,
+        feature_dim=args.feature_dim,
+    )
 
+    resume_payload: Optional[dict] = None
     if args.resume:
-        ckpt = torch.load(args.resume, map_location="cpu")
+        ckpt = torch.load(args.resume, map_location="cpu", weights_only=False)
         state = ckpt.get("model_state_dict", ckpt)
         policy.load_state_dict(state)
+        resume_payload = ckpt
         logger.info("Resumed from checkpoint %s", args.resume)
 
     replay = PrioritizedReplayBuffer(capacity=args.replay_size, alpha=args.per_alpha)
@@ -113,7 +151,9 @@ def main() -> None:
         lr=args.lr,
         batch_size=args.batch_size,
         train_after=args.train_after,
+        train_every=args.train_every,
         target_update_every=args.target_update_every,
+        max_grad_norm=args.max_grad_norm,
         epsilon_start=args.epsilon_start,
         epsilon_end=args.epsilon_end,
         epsilon_decay_steps=args.epsilon_decay_steps,
@@ -125,7 +165,20 @@ def main() -> None:
         console_log_every=args.log_updates_every,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        eval_seed=args.eval_seed,
+        self_eval_every=args.self_eval_every,
+        self_eval_episodes=args.self_eval_episodes,
     )
+
+    if resume_payload is not None:
+        loop.load_training_state(resume_payload, load_optimizer=True)
+        logger.info(
+            "Restored training state: total_env_steps=%s optim_steps=%s best_win_rate=%.4f best_episode=%s",
+            loop.total_env_steps,
+            loop.optim_steps,
+            loop.best_win_rate,
+            loop.best_episode,
+        )
 
     ckpt_dir = (
         os.path.abspath(args.checkpoint_dir)
@@ -143,6 +196,9 @@ def main() -> None:
             "mode": args.mode,
             "num_players": args.num_players,
             "num_atoms": args.num_atoms,
+            "v_min": args.v_min,
+            "v_max": args.v_max,
+            "feature_dim": args.feature_dim,
             "run_id": run_id,
             "total_episodes": args.episodes,
             "seed": args.seed,
@@ -160,23 +216,79 @@ def main() -> None:
                 "beta_end": args.beta_end,
                 "beta_anneal_steps": args.beta_anneal_steps,
                 "train_after": args.train_after,
+                "train_every": args.train_every,
                 "target_update_every": args.target_update_every,
+                "max_grad_norm": args.max_grad_norm,
+                "eval_episodes": args.eval_episodes,
+                "eval_seed": args.eval_seed,
+                "self_eval_every": args.self_eval_every,
+                "self_eval_episodes": args.self_eval_episodes,
             },
         }
 
-    def save_policy(tag: str) -> None:
+    def save_policy(tag: str, *, include_training_state: bool = True) -> None:
         path = os.path.join(ckpt_dir, f"rainbow_{run_id}_{tag}.pt")
-        save_checkpoint(path, policy, build_meta())
+        save_checkpoint(
+            path,
+            policy,
+            build_meta(),
+            optimizer=loop.optimizer,
+            training_state=loop.get_training_state() if include_training_state else None,
+        )
         logger.info("Saved checkpoint %s", path)
+
+    def save_best() -> None:
+        tagged = os.path.join(ckpt_dir, f"rainbow_{run_id}_best.pt")
+        save_checkpoint(
+            tagged,
+            policy,
+            build_meta(),
+            optimizer=loop.optimizer,
+            training_state=loop.get_training_state(),
+        )
+        alias = os.path.join(ckpt_dir, "rainbow_best.pt")
+        save_checkpoint(
+            alias,
+            policy,
+            build_meta(),
+            optimizer=loop.optimizer,
+            training_state=loop.get_training_state(),
+        )
+        logger.info(
+            "Saved best checkpoint (win_rate=%.4f at ep %s) -> %s, %s",
+            loop.best_win_rate,
+            loop.best_episode,
+            tagged,
+            alias,
+        )
 
     def on_episode_end(ep: int) -> None:
         if args.checkpoint_every > 0 and ep % args.checkpoint_every == 0:
             save_policy(f"ep{ep}")
 
+    def on_eval(ep: int, eval_stats: Dict[str, float], is_best: bool) -> None:
+        if is_best:
+            save_best()
+
     try:
-        loop.train(num_episodes=args.episodes, on_episode_end=on_episode_end)
+        loop.train(
+            num_episodes=args.episodes,
+            on_episode_end=on_episode_end,
+            on_eval=on_eval,
+        )
         save_policy("final")
-        save_checkpoint(os.path.join(ckpt_dir, "rainbow_latest.pt"), policy, build_meta())
+        save_checkpoint(
+            os.path.join(ckpt_dir, "rainbow_latest.pt"),
+            policy,
+            build_meta(),
+            optimizer=loop.optimizer,
+            training_state=loop.get_training_state(),
+        )
+        logger.info(
+            "Run complete | best_win_rate=%.4f at episode %s",
+            loop.best_win_rate,
+            loop.best_episode,
+        )
     finally:
         if gui is not None:
             gui.close()

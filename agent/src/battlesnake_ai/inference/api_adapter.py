@@ -4,6 +4,7 @@ Convert Battlesnake / Blackout HTTP JSON into hisss ``BattleSnakeState``.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from hisss.game.state import BattleSnakeState
@@ -11,6 +12,9 @@ from hisss.game.state import BattleSnakeState
 # hisss: UP=0, RIGHT=1, DOWN=2, LEFT=3
 ACTION_NAMES = ("up", "right", "down", "left")
 ACTION_FROM_NAME = {name: idx for idx, name in enumerate(ACTION_NAMES)}
+
+# hisss 1.3.0+ added optional fields; 1.2.0 rejects them. Detect once at import.
+_STATE_PARAMS = set(inspect.signature(BattleSnakeState.__init__).parameters)
 
 
 def _snake_id(snake: Mapping[str, Any]) -> str:
@@ -128,16 +132,24 @@ def request_to_state(
         food_pos.append([x, y])
         food_spawn_turns.append(int(fp.get("spawn_turn", turn)))
 
-    state = BattleSnakeState(
-        turn=turn,
-        snakes_alive=snakes_alive,
-        snake_pos=snake_pos,
-        food_pos=food_pos,
-        snake_health=snake_health,
-        snake_len=snake_len,
-        food_spawn_turns=food_spawn_turns,
-        elimination_events=None,
-    )
+    # Only pass kwargs accepted by the installed hisss version. Passing
+    # food_spawn_turns / elimination_events to hisss 1.2.x raises TypeError,
+    # which the server catches and silently returns FALLBACK_MOVE="up" every
+    # turn — making the snake walk straight into the north wall.
+    kwargs: Dict[str, Any] = {
+        "turn": turn,
+        "snakes_alive": snakes_alive,
+        "snake_pos": snake_pos,
+        "food_pos": food_pos,
+        "snake_health": snake_health,
+        "snake_len": snake_len,
+    }
+    if "food_spawn_turns" in _STATE_PARAMS:
+        kwargs["food_spawn_turns"] = food_spawn_turns
+    if "elimination_events" in _STATE_PARAMS:
+        kwargs["elimination_events"] = None
+
+    state = BattleSnakeState(**kwargs)
     return state, your_pid
 
 

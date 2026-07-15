@@ -18,6 +18,7 @@ def save_checkpoint(
     meta: Dict[str, Any],
     *,
     optimizer: Optional[torch.optim.Optimizer] = None,
+    training_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +28,8 @@ def save_checkpoint(
     }
     if optimizer is not None:
         payload["optimizer_state_dict"] = optimizer.state_dict()
+    if training_state is not None:
+        payload["training_state"] = training_state
     torch.save(payload, path)
     sidecar = path.with_suffix(".meta.json")
     with open(sidecar, "w", encoding="utf-8") as f:

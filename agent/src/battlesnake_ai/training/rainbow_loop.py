@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import random
+from collections import deque
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -55,6 +57,9 @@ class RainbowTrainingLoop:
         gui_every: int = 1,
         eval_every: int = 0,
         eval_episodes: int = 10,
+        eval_seed: Optional[int] = None,
+        self_eval_every: int = 0,
+        self_eval_episodes: int = 20,
     ):
         self.env = env
         self.policy = policy_net
@@ -80,6 +85,9 @@ class RainbowTrainingLoop:
         self.gui_every = gui_every
         self.eval_every = eval_every
         self.eval_episodes = eval_episodes
+        self.eval_seed = eval_seed
+        self.self_eval_every = self_eval_every
+        self.self_eval_episodes = self_eval_episodes
         self.lr = lr
 
         self.policy.to(self.device)
@@ -89,6 +97,10 @@ class RainbowTrainingLoop:
 
         self.total_env_steps = 0
         self.optim_steps = 0
+        self.best_win_rate: float = -1.0
+        self.best_episode: int = 0
+        self._nstep_buf: Dict[int, deque] = {}
+        self._frozen_opponent: Optional[RainbowDQN] = None
 
     def epsilon_by_step(self) -> float:
         if self.total_env_steps >= self.epsilon_decay_steps:
@@ -102,39 +114,89 @@ class RainbowTrainingLoop:
         t = self.total_env_steps / max(1, self.beta_anneal_steps)
         return self.beta_start + t * (self.beta_end - self.beta_start)
 
-    def _push_transition(
+    def _push_aggregated(
         self,
         obs_snake: np.ndarray,
         action: int,
-        reward: float,
+        n_step_return: float,
         next_obs_snake: Optional[np.ndarray],
         done: bool,
+        gamma_n: float,
     ) -> None:
-        """Push completed n-step style transition (used after episode step logic)."""
+        """Push an aggregated n-step transition into the replay buffer."""
         if done or next_obs_snake is None:
             nxt = _terminal_next_obs_like(obs_snake)
             done_flag = True
-            gamma_n = 1.0
         else:
             nxt = next_obs_snake
             done_flag = False
-            gamma_n = self.gamma**self.n_step
-
-        ret = float(reward)
-        if not done_flag and self.n_step > 1:
-            ret = float(reward)
 
         self.replay.push(
             PrioritizedTransition(
                 obs=obs_snake,
                 action=action,
-                reward=ret,
+                reward=n_step_return,
                 next_obs=nxt,
                 done=done_flag,
-                n_step_return=ret,
+                n_step_return=n_step_return,
                 gamma_n=float(gamma_n),
             )
         )
+
+    def _nstep_append(self, pid: int, obs: np.ndarray, action: int, reward: float) -> None:
+        """Append a single-step experience to this snake's n-step buffer."""
+        buf = self._nstep_buf.get(pid)
+        if buf is None:
+            buf = deque()
+            self._nstep_buf[pid] = buf
+        buf.append((obs, action, float(reward)))
+
+    def _nstep_emit_ready(self, pid: int) -> None:
+        """Emit completed non-terminal n-step transitions once the buffer is full.
+
+        Each entry stores (s_t, a_t, r_{t+1}). When the buffer holds n+1 entries
+        (times t-n .. t), the oldest entry (time t-n) has a full n-step return:
+        R = sum_{i=0}^{n-1} gamma^i * r_{t-n+1+i}, bootstrapped from V(s_t)
+        (the obs of the newest entry).
+        """
+        buf = self._nstep_buf.get(pid)
+        if buf is None:
+            return
+        n = self.n_step
+        while len(buf) > n:
+            entries = list(buf)
+            n_step_return = 0.0
+            for i in range(n):
+                n_step_return += (self.gamma ** i) * entries[i][2]
+            obs_o = entries[0][0]
+            action_o = entries[0][1]
+            next_obs_o = entries[-1][0]  # s_{t+n} = newest entry's obs
+            gamma_n = self.gamma ** n
+            buf.popleft()
+            self._push_aggregated(obs_o, action_o, n_step_return, next_obs_o, done=False, gamma_n=gamma_n)
+
+    def _nstep_flush(self, pid: int) -> None:
+        """Flush all remaining buffered entries for a snake as terminal transitions.
+
+        Called when the snake dies or the episode ends. Each entry i is emitted
+        with a partial k-step return (k = entries from i to end) and done=True.
+        """
+        buf = self._nstep_buf.get(pid)
+        if buf is None:
+            return
+        entries = list(buf)
+        buf.clear()
+        total = len(entries)
+        for i in range(total):
+            k = total - i
+            n_step_return = 0.0
+            for j in range(k):
+                n_step_return += (self.gamma ** j) * entries[i + j][2]
+            obs_o = entries[i][0]
+            action_o = entries[i][1]
+            gamma_n = self.gamma ** k
+            self._push_aggregated(obs_o, action_o, n_step_return, None, done=True, gamma_n=gamma_n)
+        self._nstep_buf.pop(pid, None)
 
     def train_step(self, epsilon: float, beta: float) -> Optional[Dict[str, float]]:
         if len(self.replay) < self.train_after or len(self.replay) < self.batch_size:
@@ -217,6 +279,7 @@ class RainbowTrainingLoop:
         turns = 0
         done = False
         last_actions: Tuple[int, ...] = ()
+        self._nstep_buf = {}
 
         while not done:
             obs, _, _ = self.env.get_obs()
@@ -252,15 +315,15 @@ class RainbowTrainingLoop:
                 o = obs[row_idx]
                 a = actions[row_idx]
                 r = float(rewards[pid])
-                if done:
-                    self._push_transition(o, a, r, None, True)
-                elif next_pat is not None and pid not in next_pat:
-                    self._push_transition(o, a, r, None, True)
+                snake_died = done or (next_pat is not None and pid not in next_pat)
+                if snake_died:
+                    # Terminal experience: append then flush as done.
+                    self._nstep_append(pid, o, a, r)
+                    self._nstep_flush(pid)
                 else:
                     assert next_obs is not None and next_pat is not None
-                    ni = next_pat.index(pid)
-                    nxt = next_obs[ni]
-                    self._push_transition(o, a, r, nxt, False)
+                    self._nstep_append(pid, o, a, r)
+                    self._nstep_emit_ready(pid)
 
             train_stats = self.train_step(eps, beta)
 
@@ -297,6 +360,11 @@ class RainbowTrainingLoop:
                 except Exception:
                     pass
 
+        # Safety flush: any snake still holding buffered n-step entries at episode
+        # end (e.g. a snake that never got a final pat entry) is flushed as terminal.
+        for pid in list(self._nstep_buf.keys()):
+            self._nstep_flush(pid)
+
         self.metrics.log_episode_end(
             episode_idx,
             total_steps=turns,
@@ -312,12 +380,18 @@ class RainbowTrainingLoop:
                 pass
         return {"turns": turns, "rewards": ep_returns}
 
-    def evaluate_policy(self, num_episodes: int = 10) -> Dict[str, float]:
+    def evaluate_policy(
+        self,
+        num_episodes: int = 10,
+        *,
+        opponent_policy: Optional[RainbowDQN] = None,
+    ) -> Dict[str, float]:
         import hisss
-        import random
 
         was_training = self.policy.training
         self.policy.eval()
+        if opponent_policy is not None:
+            opponent_policy.eval()
 
         eval_env = hisss.BattleSnakeGame(self.env.cfg)
 
@@ -326,70 +400,95 @@ class RainbowTrainingLoop:
         total_returns = 0.0
 
         for ep in range(num_episodes):
-            eval_env.reset()
-            done = False
-            steps = 0
-            ep_return = 0.0
-            last_rewards = None
+            # Seed each eval episode deterministically when an eval seed is set,
+            # so checkpoint rankings are not dominated by eval RNG noise.
+            rng_state: Optional[Tuple[Any, Any]] = None
+            if self.eval_seed is not None:
+                rng_state = (random.getstate(), np.random.get_state())
+                random.seed(int(self.eval_seed) + ep)
+                np.random.seed(int(self.eval_seed) + ep)
 
-            # Policy controls seat 0
-            seat = 0
+            try:
+                eval_env.reset()
+                done = False
+                steps = 0
+                ep_return = 0.0
+                last_rewards = None
 
-            while not done:
-                obs, _, _ = eval_env.get_obs()
-                pat = list(eval_env.players_at_turn())
+                # Policy controls seat 0
+                seat = 0
 
-                if seat not in pat:
-                    # Policy is dead, others play randomly
+                while not done:
+                    obs, _, _ = eval_env.get_obs()
+                    pat = list(eval_env.players_at_turn())
+
+                    if seat not in pat:
+                        # Policy is dead, others play randomly
+                        actions = []
+                        for pid in pat:
+                            la = eval_env.available_actions(pid)
+                            actions.append(int(random.choice(la)))
+                        joint = tuple(actions)
+                        legal = [tuple(x) for x in eval_env.available_joint_actions()]
+                        if joint not in legal:
+                            joint = tuple(random.choice(legal))
+                        last_rewards, done, _ = eval_env.step(joint)
+                        steps += 1
+                        continue
+
                     actions = []
-                    for pid in pat:
-                        la = eval_env.available_actions(pid)
-                        actions.append(int(random.choice(la)))
+                    for row_idx, pid in enumerate(pat):
+                        if pid == seat:
+                            sl = obs[row_idx : row_idx + 1]
+                            with torch.no_grad():
+                                q = self.policy(sl).detach().cpu().numpy()[0]
+                            la = eval_env.available_actions(pid)
+                            best = la[0]
+                            best_v = q[best]
+                            for a in la[1:]:
+                                if q[a] > best_v:
+                                    best_v = q[a]
+                                    best = a
+                            actions.append(int(best))
+                        elif opponent_policy is not None:
+                            sl = obs[row_idx : row_idx + 1]
+                            with torch.no_grad():
+                                q = opponent_policy(sl).detach().cpu().numpy()[0]
+                            la = eval_env.available_actions(pid)
+                            best = la[0]
+                            best_v = q[best]
+                            for a in la[1:]:
+                                if q[a] > best_v:
+                                    best_v = q[a]
+                                    best = a
+                            actions.append(int(best))
+                        else:
+                            la = eval_env.available_actions(pid)
+                            actions.append(int(random.choice(la)))
+
                     joint = tuple(actions)
                     legal = [tuple(x) for x in eval_env.available_joint_actions()]
                     if joint not in legal:
                         joint = tuple(random.choice(legal))
+
                     last_rewards, done, _ = eval_env.step(joint)
                     steps += 1
-                    continue
 
-                actions = []
-                for row_idx, pid in enumerate(pat):
-                    if pid == seat:
-                        sl = obs[row_idx : row_idx + 1]
-                        with torch.no_grad():
-                            q = self.policy(sl).detach().cpu().numpy()[0]
-                        la = eval_env.available_actions(pid)
-                        best = la[0]
-                        best_v = q[best]
-                        for a in la[1:]:
-                            if q[a] > best_v:
-                                best_v = q[a]
-                                best = a
-                        actions.append(int(best))
-                    else:
-                        la = eval_env.available_actions(pid)
-                        actions.append(int(random.choice(la)))
+                if last_rewards is not None:
+                    rewards_list = [float(last_rewards[i]) for i in range(len(last_rewards))]
+                    seat_reward = rewards_list[seat]
+                    other_rewards = [rewards_list[i] for i in range(len(rewards_list)) if i != seat]
+                    if len(other_rewards) == 0:
+                        wins += 1
+                    elif seat_reward > max(other_rewards):
+                        wins += 1
+                    total_returns += seat_reward
 
-                joint = tuple(actions)
-                legal = [tuple(x) for x in eval_env.available_joint_actions()]
-                if joint not in legal:
-                    joint = tuple(random.choice(legal))
-
-                last_rewards, done, _ = eval_env.step(joint)
-                steps += 1
-
-            if last_rewards is not None:
-                rewards_list = [float(last_rewards[i]) for i in range(len(last_rewards))]
-                seat_reward = rewards_list[seat]
-                other_rewards = [rewards_list[i] for i in range(len(rewards_list)) if i != seat]
-                if len(other_rewards) == 0:
-                    wins += 1
-                elif seat_reward > max(other_rewards):
-                    wins += 1
-                total_returns += seat_reward
-
-            total_steps += steps
+                total_steps += steps
+            finally:
+                if rng_state is not None:
+                    random.setstate(rng_state[0])
+                    np.random.set_state(rng_state[1])
 
         win_rate = wins / num_episodes
         avg_steps = total_steps / num_episodes
@@ -403,11 +502,58 @@ class RainbowTrainingLoop:
             "avg_return": avg_return,
         }
 
+    def _run_self_eval(self, num_episodes: int) -> Dict[str, float]:
+        """Evaluate current policy vs a frozen past-self snapshot (drift check)."""
+        import copy
+
+        if self._frozen_opponent is None:
+            self._frozen_opponent = RainbowDQN(
+                in_channels=self.policy.in_channels,
+                num_actions=self.policy.num_actions,
+                num_atoms=self.policy.num_atoms,
+                v_min=self.policy.v_min,
+                v_max=self.policy.v_max,
+                feature_dim=self.policy.backbone.feature_dim,
+            ).to(self.device)
+        self._frozen_opponent.load_state_dict(self.policy.state_dict())
+        frozen = copy.deepcopy(self._frozen_opponent)
+        try:
+            return self.evaluate_policy(num_episodes, opponent_policy=frozen)
+        finally:
+            del frozen
+
+    def get_training_state(self) -> Dict[str, Any]:
+        return {
+            "total_env_steps": int(self.total_env_steps),
+            "optim_steps": int(self.optim_steps),
+            "best_win_rate": float(self.best_win_rate),
+            "best_episode": int(self.best_episode),
+        }
+
+    def load_training_state(
+        self,
+        payload: Dict[str, Any],
+        *,
+        load_optimizer: bool = True,
+    ) -> None:
+        """Restore training progress so resume continues epsilon/beta annealing."""
+        ts = payload.get("training_state", payload)
+        self.total_env_steps = int(ts.get("total_env_steps", 0))
+        self.optim_steps = int(ts.get("optim_steps", 0))
+        self.best_win_rate = float(ts.get("best_win_rate", -1.0))
+        self.best_episode = int(ts.get("best_episode", 0))
+        if load_optimizer and "optimizer_state_dict" in payload:
+            try:
+                self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+            except Exception:
+                pass
+
     def train(
         self,
         num_episodes: int,
         *,
         on_episode_end: Optional[Callable[[int], None]] = None,
+        on_eval: Optional[Callable[[int, Dict[str, float], bool], None]] = None,
     ) -> None:
         cfg = {
             "algorithm": "rainbow",
@@ -436,5 +582,24 @@ class RainbowTrainingLoop:
                     win_rate=eval_stats["win_rate"],
                     avg_steps=eval_stats["avg_steps"],
                     avg_return=eval_stats["avg_return"],
+                )
+                is_best = eval_stats["win_rate"] > self.best_win_rate
+                if is_best:
+                    self.best_win_rate = eval_stats["win_rate"]
+                    self.best_episode = ep
+                if on_eval is not None:
+                    on_eval(ep, eval_stats, is_best)
+            if (
+                self.self_eval_every > 0
+                and ep % self.self_eval_every == 0
+                and ep > 0
+            ):
+                self_stats = self._run_self_eval(self.self_eval_episodes)
+                self.metrics.logger.info(
+                    "Evaluation_self at Episode %s | win_rate=%.1f%% | avg_steps=%.1f | avg_return=%.4f",
+                    ep,
+                    self_stats["win_rate"] * 100.0,
+                    self_stats["avg_steps"],
+                    self_stats["avg_return"],
                 )
 

@@ -1,8 +1,10 @@
 # Dependencies for Battlesnake AI agent
-numpy<2.0.0
+numpy>=2.3.5
 torch>=2.0.0
 tensorboard
 matplotlib
 fastapi
 uvicorn
-hisss
+# 1.3.0+ required for food_spawn_turns / elimination_events on BattleSnakeState.
+# Older 1.2.x makes server.py silently fall back to FALLBACK_MOVE every /move.
+hisss>=1.3.0
