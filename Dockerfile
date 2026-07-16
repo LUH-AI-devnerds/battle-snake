@@ -15,6 +15,10 @@ COPY agent/src/battlesnake_ai ./agent/src/battlesnake_ai
 COPY best_checkpoint/ ./best_checkpoint/
 
 ENV PYTHONPATH=/app/agent/src
+# Patch hisss at image build time (site-packages is writable here; runtime-only patch
+# can fail silently on read-only Railway layers and bring back FALLBACK_MOVE=up).
+RUN python -c "from battlesnake_ai.env.hisss_view_radius_fix import apply_view_radius_row_index_fix; import sys; sys.exit(0 if apply_view_radius_row_index_fix() else 1)"
+
 ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/rainbow_20260704_125842_ep1600.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"

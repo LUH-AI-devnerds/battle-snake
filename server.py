@@ -26,6 +26,14 @@ _AGENT_SRC = _REPO_ROOT / "agent" / "src"
 if str(_AGENT_SRC) not in sys.path:
     sys.path.insert(0, str(_AGENT_SRC))
 
+# Must run before hisss is used (view-radius row index breaks after eliminations).
+from battlesnake_ai.env.hisss_view_radius_fix import apply_view_radius_row_index_fix  # noqa: E402
+
+if not apply_view_radius_row_index_fix():
+    raise RuntimeError(
+        "hisss view-radius patch failed — /move would fall back to FALLBACK_MOVE after eliminations"
+    )
+
 from battlesnake_ai.inference.runtime import SnakeRuntime, default_checkpoint_from_env  # noqa: E402
 
 logging.basicConfig(
@@ -75,6 +83,33 @@ app = FastAPI(title="Battle Snake Blackout", lifespan=lifespan)
 def snake_info() -> Dict[str, str]:
     """Snake metadata (author must match registration when set)."""
     return {"author": SNAKE_AUTHOR, "color": SNAKE_COLOR}
+
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    """Liveness + patch/checkpoint diagnostics for deploy smoke tests."""
+    import importlib.metadata as im
+
+    hisss_ver = "unknown"
+    try:
+        hisss_ver = im.version("hisss")
+    except Exception:
+        pass
+    patch_ok = False
+    try:
+        import hisss.game.battlesnake as bsm
+
+        patch_ok = bool(getattr(bsm.BattleSnakeGame, "_bs_ai_view_radius_row_fix", False))
+    except Exception:
+        pass
+    ckpt = os.environ.get("BATTLE_SNAKE_CHECKPOINT", "")
+    return {
+        "status": "ok" if _runtime is not None and patch_ok else "degraded",
+        "hisss": hisss_ver,
+        "view_radius_patch": patch_ok,
+        "checkpoint": ckpt,
+        "survival_filter": os.environ.get("SURVIVAL_FILTER", "1"),
+    }
 
 
 @app.post("/start")

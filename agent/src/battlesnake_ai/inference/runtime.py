@@ -72,6 +72,7 @@ class SnakeRuntime:
         self.hunger_health = int(os.environ.get("SURVIVAL_HUNGER_HEALTH", "35"))
         self.combat_strategy = os.environ.get("SURVIVAL_STRATEGY", "aggressive").strip().lower()
         self._pid_by_snake_id: Dict[str, int] = {}
+        self._current_game_id: Optional[str] = None
         self._fallback_count = 0
         # Cache envs by (num_players, width, height). hisss envs are never closed
         # and recreated at runtime: doing so double-frees native memory and crashes
@@ -139,6 +140,7 @@ class SnakeRuntime:
 
     def on_game_start(self, payload: Mapping[str, Any]) -> None:
         try:
+            self._current_game_id = str((payload.get("game") or {}).get("id", "")) or None
             self._pid_by_snake_id = assign_player_ids(payload)
             if not self._pid_by_snake_id:
                 return
@@ -151,14 +153,20 @@ class SnakeRuntime:
             logger.exception("on_game_start failed; will re-initialize on first move")
 
     def on_game_end(self, payload: Mapping[str, Any]) -> None:
+        self._pid_by_snake_id = {}
+        self._current_game_id = None
         del payload  # nothing to persist for offline training in the server process
+
+    def _ensure_game(self, payload: Mapping[str, Any]) -> None:
+        gid = str((payload.get("game") or {}).get("id", "")) or None
+        if gid != self._current_game_id or not self._pid_by_snake_id:
+            self.on_game_start(payload)
 
     def decide_move(self, payload: Mapping[str, Any]) -> str:
         state = None
         your_pid = self._your_pid
         try:
-            if not self._pid_by_snake_id:
-                self.on_game_start(payload)
+            self._ensure_game(payload)
             if not self._pid_by_snake_id:
                 return self.fallback_move
 
