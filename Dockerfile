@@ -19,11 +19,11 @@ ENV PYTHONPATH=/app/agent/src
 # can fail silently on read-only Railway layers and bring back FALLBACK_MOVE=up).
 RUN python -c "from battlesnake_ai.env.hisss_view_radius_fix import apply_view_radius_row_index_fix; import sys; sys.exit(0 if apply_view_radius_row_index_fix() else 1)"
 
-ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/rainbow_20260704_125842_ep1600.pt"
+ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/rainbow_20260715_214528_best.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"
-# Survival/combat layer: avoid equal/longer heads; grow then hunt shorter snakes.
-ENV SURVIVAL_FILTER="1"
+# Model was trained with survival reward shaping; use raw Q at inference.
+ENV SURVIVAL_FILTER="0"
 ENV SURVIVAL_HUNGER_HEALTH="35"
 ENV SURVIVAL_STRATEGY="aggressive"
 

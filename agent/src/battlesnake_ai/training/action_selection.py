@@ -13,14 +13,14 @@ def joint_legal_set(env: Any) -> Set[Tuple[int, ...]]:
     return set(tuple(x) for x in env.available_joint_actions())
 
 
-def masked_argmax(q: np.ndarray, legal: List[int]) -> int:
-    best = legal[0]
-    best_v = q[best]
-    for a in legal[1:]:
-        if q[a] > best_v:
-            best_v = q[a]
-            best = a
-    return int(best)
+def masked_argmax(q: np.ndarray, legal: List[int], *, tie_eps: float = 1e-3) -> int:
+    """Argmax over legal actions; random tie-break when Q values are nearly equal."""
+    if not legal:
+        return 0
+    best_v = max(float(q[a]) for a in legal)
+    thresh = best_v - tie_eps
+    candidates = [int(a) for a in legal if float(q[a]) >= thresh]
+    return int(random.choice(candidates))
 
 
 def masked_softmax_sample(

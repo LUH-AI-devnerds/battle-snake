@@ -55,7 +55,7 @@ echo "Start: $(date -Is)"
 python -c "import torch; print('PyTorch', torch.__version__, '| CUDA', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
 python scripts/train_rainbow.py \
-  --resume "${REPO}/best_checkpoint/rainbow_20260704_125842_ep1600.pt" \
+  --resume "${REPO}/best_checkpoint/rainbow_20260715_214528_best.pt" \
   --mode restricted_standard \
   --episodes 5000 \
   --seed 42 \

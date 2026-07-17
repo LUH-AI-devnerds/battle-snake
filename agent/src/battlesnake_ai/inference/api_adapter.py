@@ -93,7 +93,7 @@ def request_to_state(
     your_pid = pid_map[you_id]
     num_players = max(pid_map.values()) + 1
 
-    turn = int(payload.get("turn", 0))
+    turn = int(payload.get("turn") or 0)
     snakes = _collect_snakes(payload)
 
     snake_pos: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(num_players)}
