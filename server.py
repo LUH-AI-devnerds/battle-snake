@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _AGENT_SRC = _REPO_ROOT / "agent" / "src"
@@ -55,6 +55,13 @@ class BattlesnakeRequest(BaseModel):
     you: Dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"extra": "allow"}
+
+    @field_validator("turn", mode="before")
+    @classmethod
+    def _coerce_turn(cls, value: Any) -> int:
+        if value is None:
+            return 0
+        return int(value)
 
 
 @asynccontextmanager
