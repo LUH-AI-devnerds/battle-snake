@@ -73,15 +73,33 @@ def assign_player_ids(payload: Mapping[str, Any]) -> Dict[str, int]:
     return {sid: pid for pid, sid in enumerate(ids)}
 
 
+def _ghost_corner(pid: int, width: int, height: int) -> List[Tuple[int, int]]:
+    """Far-away placeholder body so FOW-hidden snakes are not treated as dead."""
+    corners = [
+        (1, 1),
+        (width - 2, 1),
+        (1, height - 2),
+        (width - 2, height - 2),
+    ]
+    x, y = corners[int(pid) % 4]
+    return [(x, y), (x, y), (x, y)]
+
+
 def request_to_state(
     payload: Mapping[str, Any],
     *,
     pid_by_snake_id: Optional[Mapping[str, int]] = None,
+    ghosts: Optional[Mapping[int, Mapping[str, Any]]] = None,
 ) -> Tuple[BattleSnakeState, int]:
     """
     Build ``BattleSnakeState`` and return ``(state, your_player_index)``.
 
     ``payload`` is a Blackout ``/start`` or ``/move`` body (``game``, ``turn``, ``board``, ``you``).
+
+    Under fog-of-war, unseen opponents are omitted from ``board.snakes``. Marking
+    them dead makes hisss treat the game as terminal (sole survivor) and
+    ``get_obs`` fails — which previously fell back to always-``up``. Missing
+    snakes are kept alive via ``ghosts`` / corner placeholders instead.
     """
     if "you" not in payload:
         raise ValueError("Request body must include 'you'")
@@ -91,37 +109,70 @@ def request_to_state(
     if you_id not in pid_map:
         pid_map[you_id] = len(pid_map)
     your_pid = pid_map[you_id]
-    num_players = max(pid_map.values()) + 1
+    num_players = max(max(pid_map.values()) + 1, 4)
 
     turn = int(payload.get("turn") or 0)
+    width, height = _board_dims(payload)
     snakes = _collect_snakes(payload)
+    # Also consider dead_snakes so we permanently retire eliminated opponents.
+    board = payload.get("board") or {}
+    dead = list(board.get("dead_snakes") or payload.get("dead_snakes") or [])
+    dead_ids = {_snake_id(s) for s in dead if _snake_id(s)}
 
     snake_pos: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(num_players)}
     snakes_alive = [False] * num_players
     snake_health = [0] * num_players
     snake_len = [0] * num_players
+    seen: set[int] = set()
 
-    for snake in snakes:
+    for snake in list(snakes) + list(dead):
         sid = _snake_id(snake)
         pid = pid_map.get(sid)
         if pid is None:
             continue
         coords = _body_coords(snake)
-        snake_pos[pid] = coords
+        snake_pos[pid] = coords or _ghost_corner(pid, width, height)
         health = int(snake.get("health", 0))
         snake_health[pid] = health
-        snake_len[pid] = int(snake.get("length", len(coords) or 0))
+        snake_len[pid] = int(snake.get("length", len(coords) or 3))
         elim = snake.get("elimination") or snake.get("elimination_event")
-        snakes_alive[pid] = health > 0 and elim is None
+        # Dead-list entries or explicit elimination → dead; otherwise alive.
+        snakes_alive[pid] = sid not in dead_ids and health > 0 and elim is None
+        seen.add(pid)
 
-    # Ensure every slot has a body (hisss requires entries for all players).
+    ghosts = ghosts or {}
     for pid in range(num_players):
-        if pid not in snake_pos or not snake_pos[pid]:
+        if pid in seen:
+            continue
+        if pid == your_pid:
             you = payload.get("you")
-            if pid == your_pid and you:
-                snake_pos[pid] = _body_coords(you)
-            else:
-                snake_pos[pid] = [(0, 0)]
+            snake_pos[pid] = _body_coords(you) if you else _ghost_corner(pid, width, height)
+            snake_health[pid] = int((you or {}).get("health", 100))
+            snake_len[pid] = int((you or {}).get("length", 3))
+            snakes_alive[pid] = True
+            continue
+        ghost = ghosts.get(pid)
+        if ghost and ghost.get("alive", True):
+            snake_pos[pid] = list(ghost.get("pos") or _ghost_corner(pid, width, height))
+            snake_health[pid] = int(ghost.get("health", 100))
+            snake_len[pid] = int(ghost.get("length", 3))
+            snakes_alive[pid] = True
+        else:
+            # Never-seen FOW opponent: keep alive at a far corner so the match
+            # is not terminal and the 4-player observation stays valid.
+            snake_pos[pid] = _ghost_corner(pid, width, height)
+            snake_health[pid] = 100
+            snake_len[pid] = 3
+            snakes_alive[pid] = True
+
+    # Avoid overlapping our head with a ghost corner on the same cell.
+    you_head = snake_pos[your_pid][0] if snake_pos.get(your_pid) else None
+    if you_head is not None:
+        for pid in range(num_players):
+            if pid == your_pid or not snakes_alive[pid]:
+                continue
+            if snake_pos[pid] and snake_pos[pid][0] == you_head:
+                snake_pos[pid] = _ghost_corner((pid + 1) % 4, width, height)
 
     food_pos: List[List[int]] = []
     food_spawn_turns: List[int] = []
@@ -132,10 +183,6 @@ def request_to_state(
         food_pos.append([x, y])
         food_spawn_turns.append(int(fp.get("spawn_turn", turn)))
 
-    # Only pass kwargs accepted by the installed hisss version. Passing
-    # food_spawn_turns / elimination_events to hisss 1.2.x raises TypeError,
-    # which the server catches and silently returns FALLBACK_MOVE="up" every
-    # turn — making the snake walk straight into the north wall.
     kwargs: Dict[str, Any] = {
         "turn": turn,
         "snakes_alive": snakes_alive,

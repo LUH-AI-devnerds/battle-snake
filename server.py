@@ -110,12 +110,14 @@ def health() -> Dict[str, Any]:
     except Exception:
         pass
     ckpt = os.environ.get("BATTLE_SNAKE_CHECKPOINT", "")
+    last = _runtime.last_decision() if _runtime is not None else {}
     return {
         "status": "ok" if _runtime is not None and patch_ok else "degraded",
         "hisss": hisss_ver,
         "view_radius_patch": patch_ok,
         "checkpoint": ckpt,
-        "survival_filter": os.environ.get("SURVIVAL_FILTER", "1"),
+        "survival_filter": os.environ.get("SURVIVAL_FILTER", "0"),
+        "last_decision": last,
     }
 
 
