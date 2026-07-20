@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 
 from battlesnake_ai.models.rainbow_dqn import RainbowDQN
+from battlesnake_ai.training.action_selection import masked_argmax
+from battlesnake_ai.training.opponent_pool import OpponentPool
 from battlesnake_ai.training.action_selection import select_joint_actions_epsilon_greedy
 from battlesnake_ai.training.dqn_logging import DQNMetricsLogger
 from battlesnake_ai.training.prioritized_replay import (
@@ -65,6 +67,8 @@ class RainbowTrainingLoop:
         length_penalty: float = 0.05,
         proximity_penalty: float = 0.02,
         survival_strategy: str = "aggressive",
+        opponent_pool: Optional[OpponentPool] = None,
+        self_play_fraction: float = 0.0,
     ):
         self.env = env
         self.policy = policy_net
@@ -98,6 +102,8 @@ class RainbowTrainingLoop:
         self.length_penalty = float(length_penalty)
         self.proximity_penalty = float(proximity_penalty)
         self.survival_strategy = (survival_strategy or "aggressive").strip().lower()
+        self.opponent_pool = opponent_pool
+        self.self_play_fraction = float(self_play_fraction)
         self.lr = lr
 
         self.policy.to(self.device)
@@ -210,12 +216,12 @@ class RainbowTrainingLoop:
             nxt = _terminal_next_obs_like(obs_snake)
             done_flag = True
         else:
-            nxt = next_obs_snake
+            nxt = np.asarray(next_obs_snake, dtype=np.float32)
             done_flag = False
 
         self.replay.push(
             PrioritizedTransition(
-                obs=obs_snake,
+                obs=np.asarray(obs_snake, dtype=np.float32),
                 action=action,
                 reward=n_step_return,
                 next_obs=nxt,
@@ -231,7 +237,7 @@ class RainbowTrainingLoop:
         if buf is None:
             buf = deque()
             self._nstep_buf[pid] = buf
-        buf.append((obs, action, float(reward)))
+        buf.append((np.asarray(obs, dtype=np.float32), action, float(reward)))
 
     def _nstep_emit_ready(self, pid: int) -> None:
         """Emit completed non-terminal n-step transitions once the buffer is full.
@@ -362,6 +368,43 @@ class RainbowTrainingLoop:
         done = False
         last_actions: Tuple[int, ...] = ()
         self._nstep_buf = {}
+        
+        # Reset noise for NoisyNets
+        if hasattr(self.policy, "reset_noise"):
+            self.policy.reset_noise()
+
+        is_self_play = (self.self_play_fraction > 0 and random.random() < self.self_play_fraction)
+        
+        # Assign policies to seats
+        # seat_policies[pid] = (model, is_learning, eps) 
+        # If model is None, it means random player.
+        seat_policies = {}
+        if is_self_play:
+            learning_seat = 0
+            seat_policies[learning_seat] = (self.policy, True, self.epsilon_by_step())
+            for pid in range(1, self.env.num_players):
+                # Peak curriculum: 70% pool, 20% current policy, 10% random
+                r = random.random()
+                if self.opponent_pool is not None and r < 0.7:
+                    sampled = self.opponent_pool.sample_opponent(self.policy)
+                    if sampled is not None:
+                        opp_model, _ = sampled
+                        if hasattr(opp_model, "reset_noise"):
+                            opp_model.reset_noise()
+                        seat_policies[pid] = (opp_model, False, 0.0) # Greedy
+                    else:
+                        seat_policies[pid] = (None, False, 0.0) # Fallback random if pool empty
+                elif r < 0.9:
+                    seat_policies[pid] = (self.policy, False, 0.0) # Greedy current
+                else:
+                    seat_policies[pid] = (None, False, 0.0) # Random
+        else:
+            # Standard training: all seats are learning policy (but this messes up Q-learning if they share replay but act independently? 
+            # Actually standard BattleSnake self-play usually has all seats learn, but single-seat learning is more stable).
+            # We'll just let all seats learn if not in self-play curriculum mode.
+            eps = self.epsilon_by_step()
+            for pid in range(self.env.num_players):
+                seat_policies[pid] = (self.policy, True, eps)
 
         while not done:
             obs, _, _ = self.env.get_obs()
@@ -369,10 +412,28 @@ class RainbowTrainingLoop:
             if obs.shape[0] != len(pat):
                 raise RuntimeError(f"obs rows ({obs.shape[0]}) != players_at_turn ({pat})")
 
-            eps = self.epsilon_by_step()
             beta = self.beta_by_step()
 
-            actions = select_joint_actions_epsilon_greedy(self.env, self.policy, obs, eps)
+            # Select actions
+            greedy = []
+            for row_idx, pid in enumerate(pat):
+                model, _, eps = seat_policies[pid]
+                if model is None or random.random() < eps:
+                    la = self.env.available_actions(pid)
+                    greedy.append(int(random.choice(la)))
+                else:
+                    with torch.no_grad():
+                        q = model(obs[row_idx : row_idx + 1]).detach().cpu().numpy()[0]
+                    la = self.env.available_actions(pid)
+                    greedy.append(masked_argmax(q, la))
+                    
+            tup = tuple(greedy)
+            legal = [tuple(x) for x in self.env.available_joint_actions()]
+            if tup in legal:
+                actions = tup
+            else:
+                actions = tuple(random.choice(legal))
+                
             last_actions = tuple(actions)
             st_before = self.env.get_state()
             rewards, done, _ = self.env.step(actions)
@@ -406,7 +467,12 @@ class RainbowTrainingLoop:
                 next_obs, _, _ = self.env.get_obs()
                 next_pat = list(self.env.players_at_turn())
 
+            # Store experience ONLY for learning seats
             for row_idx, pid in enumerate(pat):
+                _, is_learning, _ = seat_policies[pid]
+                if not is_learning:
+                    continue
+                    
                 o = obs[row_idx]
                 a = actions[row_idx]
                 r = float(rewards[pid])
@@ -420,7 +486,7 @@ class RainbowTrainingLoop:
                     self._nstep_append(pid, o, a, r)
                     self._nstep_emit_ready(pid)
 
-            train_stats = self.train_step(eps, beta)
+            train_stats = self.train_step(self.epsilon_by_step(), beta)
 
             if self.gui is not None and self.gui_every > 0 and self.total_env_steps % self.gui_every == 0:
                 try:

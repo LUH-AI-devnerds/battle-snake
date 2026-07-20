@@ -22,7 +22,19 @@ def build_model_from_meta(meta: dict) -> nn.Module:
         return DQN(in_channels=in_channels, num_actions=num_actions)
     if algo in ("rainbow",):
         num_atoms = int(meta.get("num_atoms", 51))
-        return RainbowDQN(in_channels=in_channels, num_actions=num_actions, num_atoms=num_atoms)
+        feature_dim = int(meta.get("feature_dim", 64))
+        noisy = bool(meta.get("noisy", False))
+        v_min = float(meta.get("v_min", -1.0))
+        v_max = float(meta.get("v_max", 1.0))
+        return RainbowDQN(
+            in_channels=in_channels,
+            num_actions=num_actions,
+            num_atoms=num_atoms,
+            v_min=v_min,
+            v_max=v_max,
+            feature_dim=feature_dim,
+            noisy=noisy,
+        )
     if algo in ("ppo", "ppo_finetune"):
         return PPOPolicy(in_channels=in_channels, num_actions=num_actions)
     raise ValueError(f"Unknown algorithm in checkpoint: {algo}")

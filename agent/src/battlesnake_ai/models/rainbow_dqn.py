@@ -1,4 +1,4 @@
-"""Rainbow DQN: dueling + distributional (C51) head with shared CNN backbone."""
+"""Rainbow DQN: dueling + distributional (C51) + NoisyNet with deep residual backbone."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from battlesnake_ai.models.backbone import ConvBackbone
 from battlesnake_ai.models.base import BaseModel
+from battlesnake_ai.models.noisy_linear import NoisyLinear
 
 
 class RainbowDQN(BaseModel):
@@ -19,15 +20,20 @@ class RainbowDQN(BaseModel):
         num_atoms: int = 51,
         v_min: float = -1.0,
         v_max: float = 1.0,
-        feature_dim: int = 64,
+        feature_dim: int = 128,
+        noisy: bool = True,
     ):
         super().__init__(in_channels, num_actions)
         self.num_atoms = num_atoms
         self.v_min = v_min
         self.v_max = v_max
+        self.noisy = noisy
         self.backbone = ConvBackbone(in_channels, feature_dim=feature_dim)
-        self.value_head = nn.Linear(feature_dim, num_atoms)
-        self.advantage_head = nn.Linear(feature_dim, num_actions * num_atoms)
+
+        Linear = NoisyLinear if noisy else nn.Linear
+        self.value_head = Linear(feature_dim, num_atoms)
+        self.advantage_head = Linear(feature_dim, num_actions * num_atoms)
+
         support = torch.linspace(v_min, v_max, num_atoms)
         self.register_buffer("support", support)
         delta = (v_max - v_min) / (num_atoms - 1)
