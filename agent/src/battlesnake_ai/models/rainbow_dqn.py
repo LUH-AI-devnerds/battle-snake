@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from battlesnake_ai.models.backbone import ConvBackbone
+from battlesnake_ai.models.backbone import ConvBackbone, ShallowConvBackbone
 from battlesnake_ai.models.base import BaseModel
 from battlesnake_ai.models.noisy_linear import NoisyLinear
 
@@ -28,7 +28,10 @@ class RainbowDQN(BaseModel):
         self.v_min = v_min
         self.v_max = v_max
         self.noisy = noisy
-        self.backbone = ConvBackbone(in_channels, feature_dim=feature_dim)
+        if feature_dim == 64:
+            self.backbone = ShallowConvBackbone(in_channels, feature_dim=feature_dim)
+        else:
+            self.backbone = ConvBackbone(in_channels, feature_dim=feature_dim)
 
         Linear = NoisyLinear if noisy else nn.Linear
         self.value_head = Linear(feature_dim, num_atoms)
