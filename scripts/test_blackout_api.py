@@ -44,7 +44,7 @@ def main() -> None:
     game_id = int(os.environ.get("BLACKOUT_GAME_ID", "33946"))
     ckpt = os.environ.get(
         "BATTLE_SNAKE_CHECKPOINT",
-        "logs/checkpoints/rainbow_20260602_182838_ep75.pt",
+        "best_checkpoint/rainbow_v2_best.pt",
     )
     ckpt_path = _REPO / ckpt
     print(f"Loading {ckpt_path}")

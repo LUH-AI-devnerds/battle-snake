@@ -235,7 +235,7 @@ This repo includes a competition-ready server for [Battlesnake Blackout 2026](ht
 
 Blackout runs **restricted standard** games: 15×15 board, 4 snakes, **view radius 5**. Use a checkpoint trained with `--mode restricted_standard` (17 input channels). The Docker image ships:
 
-`best_checkpoint/rainbow_20260715_214528_best.pt` (97% eval win rate, episode 3750)
+`best_checkpoint/rainbow_v2_best.pt` (Rainbow v2: feature_dim 128, noisy nets, self-play)
 
 Requires **hisss ≥ 1.3.0** (`requirements-server.txt`). With older hisss the server would catch a `BattleSnakeState` constructor error on every `/move` and silently return `FALLBACK_MOVE=up`, making the snake walk north into the wall.
 
@@ -256,7 +256,7 @@ All handlers must respond in **under 500 ms**. The bundled Rainbow policy typica
 cp .env.example .env   # set SNAKE_AUTHOR to your registered snake name
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=agent/src
-export BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260715_214528_best.pt
+export BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_v2_best.pt
 
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
@@ -264,7 +264,7 @@ uvicorn server:app --host 0.0.0.0 --port 8000
 Smoke-test against a real Blackout replay frame:
 
 ```bash
-BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_20260715_214528_best.pt \
+BATTLE_SNAKE_CHECKPOINT=best_checkpoint/rainbow_v2_best.pt \
   python scripts/test_blackout_api.py
 ```
 
