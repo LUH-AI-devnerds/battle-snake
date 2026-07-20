@@ -167,26 +167,76 @@ class RainbowTrainingLoop:
 
         aggressive = self.survival_strategy not in {"defensive", "survive", "survival"}
         r += self.living_bonus
+        
+        # Determine early vs endgame (based on number of snakes alive)
+        num_alive = sum(1 for alive in st_before.snakes_alive if alive)
+        endgame = num_alive <= 2
 
+        # 1. Starvation Urgency
+        health_before = int(st_before.snake_health[pid])
         len_before = int(st_before.snake_len[pid])
         len_after = int(st_after.snake_len[pid]) if st_after.snakes_alive[pid] else len_before
-        if len_after > len_before:
-            # Aggressive: reward growth (size enables hunting). Defensive: penalize.
-            r += self.length_penalty if aggressive else -self.length_penalty
+        
+        ate_food = len_after > len_before
+        if ate_food:
+            if aggressive:
+                # Base growth reward
+                growth_reward = self.length_penalty 
+                # Urgency multiplier: if health was very low, increase the reward
+                if health_before < 30:
+                    growth_reward *= 3.0
+                elif health_before > 80:
+                    growth_reward = 0.0   # No reward for being greedy when full
+                r += growth_reward
+            else:
+                r -= self.length_penalty
 
+        # 2. Board Control (Edge Penalty when threatened)
+        # Check if head is on the edge of the board
+        head_pos = st_after.snake_pos.get(pid)
+        if head_pos and len(head_pos) > 0:
+            hx, hy = int(head_pos[0][0]), int(head_pos[0][1])
+            w, h = self.env.cfg.w, self.env.cfg.h
+            on_edge = (hx == 0 or hx == w - 1 or hy == 0 or hy == h - 1)
+            
+            if on_edge:
+                # Check if threatened by a larger/equal snake
+                dist_to_threat = self._min_head_dist(st_after, pid, only_ge=True)
+                if dist_to_threat <= 3:
+                    r -= 0.1  # Penalize being trapped on the edge near a threat
+
+        # 3. Kill Bonus
+        for oid, alive_before in enumerate(st_before.snakes_alive):
+            if oid != pid and alive_before and not st_after.snakes_alive[oid]:
+                # Opponent died. Check if we were adjacent to them in st_before
+                opp_body = st_before.snake_pos.get(oid) or []
+                our_body = st_before.snake_pos.get(pid) or []
+                if opp_body and our_body:
+                    ohx, ohy = int(opp_body[0][0]), int(opp_body[0][1])
+                    # Distance from their head to any part of our body
+                    min_dist = min(abs(ohx - int(bx)) + abs(ohy - int(by)) for bx, by in our_body)
+                    if min_dist <= 2:
+                        r += 0.5  # Massive reward for eliminating an opponent nearby
+                        break
+
+        # 4. Proximity strategy
         if st_after.snakes_alive[pid]:
             # Avoid closing on equal/longer heads.
             d0 = self._min_head_dist(st_before, pid, only_ge=True)
             d1 = self._min_head_dist(st_after, pid, only_ge=True)
             if np.isfinite(d0) and np.isfinite(d1) and d1 < d0:
-                r -= self.proximity_penalty * (d0 - d1)
+                # Heavy penalty if not endgame
+                multiplier = 1.0 if endgame else 2.0
+                r -= self.proximity_penalty * (d0 - d1) * multiplier
 
             if aggressive:
                 # Reward closing on shorter prey (hunt).
                 p0 = self._min_head_dist(st_before, pid, only_lt=True)
                 p1 = self._min_head_dist(st_after, pid, only_lt=True)
                 if np.isfinite(p0) and np.isfinite(p1) and p1 < p0:
-                    r += self.proximity_penalty * (p0 - p1)
+                    # Double hunting reward in endgame
+                    multiplier = 2.0 if endgame else 0.0  # In early game, don't hunt
+                    r += self.proximity_penalty * (p0 - p1) * multiplier
 
         return float(np.clip(r, -1.0, 1.0))
 
