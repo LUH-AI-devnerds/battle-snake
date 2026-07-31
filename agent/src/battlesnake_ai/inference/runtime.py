@@ -363,7 +363,7 @@ class SnakeRuntime:
 def default_checkpoint_from_env() -> Path:
     raw = os.environ.get(
         "BATTLE_SNAKE_CHECKPOINT",
-        "best_checkpoint/rainbow_v4_best_random.pt",
+        "best_checkpoint/ppo_best.pt",
     )
     root = Path(__file__).resolve().parents[4]
     p = Path(raw)
