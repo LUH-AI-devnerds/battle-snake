@@ -7,8 +7,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 from battlesnake_ai.env.builder import make_env
+from battlesnake_ai.inference.agent_loader import load_agent
 from battlesnake_ai.models.ppo_policy import PPOPolicy
-from battlesnake_ai.training.checkpoint import default_checkpoint_dir, save_checkpoint
+from battlesnake_ai.training.checkpoint import default_checkpoint_dir, load_checkpoint, save_checkpoint
 from battlesnake_ai.training.logger import setup_logger
 from battlesnake_ai.training.ppo_loop import PPOTrainingLoop, PPOMetricsLogger
 from battlesnake_ai.viz.board_gui import BoardGUI
@@ -45,6 +46,20 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=str, default=None)
+    parser.add_argument(
+        "--rainbow-opponent",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to a Rainbow DQN checkpoint to use as frozen opponent for all non-seat-0 snakes.",
+    )
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to a PPO checkpoint to resume training from.",
+    )
 
     args = parser.parse_args()
 
@@ -61,6 +76,23 @@ def main() -> None:
     in_channels = obs.shape[-1]
 
     policy = PPOPolicy(in_channels=in_channels)
+
+    # Optionally resume from an existing PPO checkpoint.
+    if args.resume_checkpoint:
+        import torch
+        def _ppo_factory(meta: dict) -> PPOPolicy:
+            return PPOPolicy(
+                in_channels=int(meta.get("in_channels", in_channels)),
+                num_actions=int(meta.get("num_actions", 4)),
+            )
+        policy, resume_meta, _ = load_checkpoint(args.resume_checkpoint, _ppo_factory)
+        logger.info("Resumed PPO policy from %s (meta=%s)", args.resume_checkpoint, resume_meta)
+
+    # Optionally load the Rainbow DQN opponent.
+    rainbow_opponent = None
+    if args.rainbow_opponent:
+        rainbow_opponent, rainbow_meta = load_agent(args.rainbow_opponent)
+        logger.info("Rainbow DQN opponent loaded from %s (meta=%s)", args.rainbow_opponent, rainbow_meta)
     metrics = PPOMetricsLogger(logger)
     gui = BoardGUI(title=f"Battlesnake PPO — {args.mode}") if args.gui else None
 
@@ -81,6 +113,7 @@ def main() -> None:
         gui_every=args.gui_every,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        rainbow_opponent=rainbow_opponent,
     )
 
     ckpt_dir = (

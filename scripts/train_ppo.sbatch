@@ -24,4 +24,6 @@ srun python3 agent/scripts/train_ppo.py \
     --eval-every 50 \
     --eval-episodes 100 \
     --checkpoint-every 500 \
-    --log-dir logs
+    --log-dir logs \
+    --resume-checkpoint best_checkpoint/ppo_best.pt \
+    --rainbow-opponent best_checkpoint/rainbow_v4_best_random.pt

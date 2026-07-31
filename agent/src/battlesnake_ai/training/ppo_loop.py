@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from battlesnake_ai.models.ppo_policy import PPOPolicy
-from battlesnake_ai.training.action_selection import stochastic_joint
+from battlesnake_ai.training.action_selection import masked_argmax, stochastic_joint
 from battlesnake_ai.training.rollout_buffer import RolloutBuffer, RolloutStep
 
 
@@ -83,6 +83,7 @@ class PPOTrainingLoop:
         freeze_encoder: bool = False,
         eval_every: int = 0,
         eval_episodes: int = 10,
+        rainbow_opponent: Optional[nn.Module] = None,
     ):
         self.env = env
         self.policy = policy
@@ -99,6 +100,11 @@ class PPOTrainingLoop:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.gui = gui
         self.gui_every = gui_every
+        # Rainbow DQN opponent model (frozen) used in place of self-play.
+        self.rainbow_opponent = rainbow_opponent
+        if self.rainbow_opponent is not None:
+            self.rainbow_opponent.to(self.device)
+            self.rainbow_opponent.eval()
 
         self.policy.to(self.device)
         if freeze_encoder:
@@ -111,28 +117,51 @@ class PPOTrainingLoop:
         self.eval_every = eval_every
         self.eval_episodes = eval_episodes
 
+    def _rainbow_action(self, obs_slice: np.ndarray, pid: int) -> int:
+        """Select an action for an opponent snake using the frozen Rainbow DQN."""
+        import random
+        la = list(self.env.available_actions(pid))
+        if not la:
+            return 0
+        with torch.no_grad():
+            q = self.rainbow_opponent(obs_slice).detach().cpu().numpy()[0]
+        return masked_argmax(q, la)
+
     def _select_actions(self, obs: np.ndarray) -> Tuple[Tuple[int, ...], List[float], List[float]]:
+        """Select actions for all players.
+
+        Seat 0 always uses the PPO policy being trained.  All other seats use
+        the Rainbow DQN opponent when one is provided, otherwise fall back to
+        the PPO self-play policy.
+        """
+        import random
         players = list(self.env.players_at_turn())
-
-        def logits_fn(slice_obs: np.ndarray) -> np.ndarray:
-            with torch.no_grad():
-                return self.policy.actor_logits(slice_obs).detach().cpu().numpy()[0]
-
-        actions = stochastic_joint(self.env, obs, logits_fn)
+        actions: List[int] = []
         log_probs: List[float] = []
         values: List[float] = []
+
         with torch.no_grad():
             for row_idx, pid in enumerate(players):
                 sl = obs[row_idx : row_idx + 1]
                 la = self.env.available_actions(pid)
-                logits = self.policy.actor_logits(sl)[0]
-                mask = torch.full_like(logits, -1e9)
-                for a in la:
-                    mask[a] = 0.0
-                dist = torch.distributions.Categorical(logits=logits + mask)
-                a = actions[row_idx]
-                log_probs.append(float(dist.log_prob(torch.tensor(a, device=logits.device)).item()))
-                values.append(float(self.policy.value(sl).item()))
+                if self.rainbow_opponent is not None and pid != 0:
+                    # Opponent controlled by the frozen Rainbow DQN
+                    a = self._rainbow_action(sl, pid)
+                    actions.append(a)
+                    # Dummy log_prob / value for non-policy snakes (not used in update)
+                    log_probs.append(0.0)
+                    values.append(0.0)
+                else:
+                    logits = self.policy.actor_logits(sl)[0]
+                    mask = torch.full_like(logits, -1e9)
+                    for a in la:
+                        mask[a] = 0.0
+                    dist = torch.distributions.Categorical(logits=logits + mask)
+                    sampled = int(dist.sample().item())
+                    actions.append(sampled)
+                    log_probs.append(float(dist.log_prob(torch.tensor(sampled, device=logits.device)).item()))
+                    values.append(float(self.policy.value(sl).item()))
+
         return tuple(actions), log_probs, values
 
     def ppo_update(self, buffer: RolloutBuffer, last_value: float, episode_idx: int) -> Dict[str, float]:
@@ -296,7 +325,6 @@ class PPOTrainingLoop:
             eval_env.reset()
             done = False
             steps = 0
-            ep_return = 0.0
             last_rewards = None
 
             # Policy controls seat 0
@@ -307,11 +335,18 @@ class PPOTrainingLoop:
                 pat = list(eval_env.players_at_turn())
 
                 if seat not in pat:
-                    # Policy is dead, others play randomly
+                    # Policy is dead — opponents finish the game
                     actions = []
-                    for pid in pat:
-                        la = eval_env.available_actions(pid)
-                        actions.append(int(random.choice(la)))
+                    for row_idx, pid in enumerate(pat):
+                        sl = obs[row_idx : row_idx + 1]
+                        if self.rainbow_opponent is not None:
+                            la = list(eval_env.available_actions(pid))
+                            with torch.no_grad():
+                                q = self.rainbow_opponent(sl).detach().cpu().numpy()[0]
+                            actions.append(masked_argmax(q, la))
+                        else:
+                            la = eval_env.available_actions(pid)
+                            actions.append(int(random.choice(la)))
                     joint = tuple(actions)
                     legal = [tuple(x) for x in eval_env.available_joint_actions()]
                     if joint not in legal:
@@ -322,8 +357,9 @@ class PPOTrainingLoop:
 
                 actions = []
                 for row_idx, pid in enumerate(pat):
+                    sl = obs[row_idx : row_idx + 1]
                     if pid == seat:
-                        sl = obs[row_idx : row_idx + 1]
+                        # PPO policy picks greedily
                         with torch.no_grad():
                             logits = self.policy.actor_logits(sl).detach().cpu().numpy()[0]
                         la = eval_env.available_actions(pid)
@@ -335,8 +371,15 @@ class PPOTrainingLoop:
                                 best = a
                         actions.append(int(best))
                     else:
-                        la = eval_env.available_actions(pid)
-                        actions.append(int(random.choice(la)))
+                        # Opponent: Rainbow DQN or random
+                        if self.rainbow_opponent is not None:
+                            la = list(eval_env.available_actions(pid))
+                            with torch.no_grad():
+                                q = self.rainbow_opponent(sl).detach().cpu().numpy()[0]
+                            actions.append(masked_argmax(q, la))
+                        else:
+                            la = eval_env.available_actions(pid)
+                            actions.append(int(random.choice(la)))
 
                 joint = tuple(actions)
                 legal = [tuple(x) for x in eval_env.available_joint_actions()]
