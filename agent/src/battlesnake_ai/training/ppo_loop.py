@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -70,13 +71,20 @@ class PPOTrainingLoop:
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         lr: float = 3e-4,
+        lr_end: float = 0.0,
         rollout_steps: int = 2048,
         ppo_epochs: int = 4,
         minibatch_size: int = 64,
         clip_eps: float = 0.2,
         value_coef: float = 0.5,
         entropy_coef: float = 0.01,
+        entropy_coef_end: float = 0.001,
         max_grad_norm: float = 0.5,
+        survival_shaping: bool = False,
+        living_bonus: float = 0.005,
+        length_penalty: float = 0.01,
+        proximity_penalty: float = 0.005,
+        survival_strategy: str = "aggressive",
         device: Optional[torch.device] = None,
         gui: Optional[Any] = None,
         gui_every: int = 1,
@@ -90,13 +98,22 @@ class PPOTrainingLoop:
         self.metrics = metrics
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.lr = lr
+        self.lr_end = lr_end
         self.rollout_steps = rollout_steps
         self.ppo_epochs = ppo_epochs
         self.minibatch_size = minibatch_size
         self.clip_eps = clip_eps
         self.value_coef = value_coef
         self.entropy_coef = entropy_coef
+        self.entropy_coef_end = entropy_coef_end
+        self.current_entropy_coef = entropy_coef
         self.max_grad_norm = max_grad_norm
+        self.survival_shaping = survival_shaping
+        self.living_bonus = living_bonus
+        self.length_penalty = length_penalty
+        self.proximity_penalty = proximity_penalty
+        self.survival_strategy = survival_strategy
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.gui = gui
         self.gui_every = gui_every
@@ -161,8 +178,126 @@ class PPOTrainingLoop:
                     actions.append(sampled)
                     log_probs.append(float(dist.log_prob(torch.tensor(sampled, device=logits.device)).item()))
                     values.append(float(self.policy.value(sl).item()))
-
         return tuple(actions), log_probs, values
+
+    def _min_head_dist(self, st: Any, pid: int, only_ge: bool = False, only_lt: bool = False) -> float:
+        """Helper to find distance to nearest opponent head."""
+        if not st.snakes_alive[pid]:
+            return float("inf")
+        my_head = st.snake_pos.get(pid)
+        if not my_head or len(my_head) == 0:
+            return float("inf")
+        hx, hy = my_head[0]
+        my_len = int(st.snake_len[pid])
+
+        min_d = float("inf")
+        for oid, alive in enumerate(st.snakes_alive):
+            if not alive or oid == pid:
+                continue
+            opp_len = int(st.snake_len[oid])
+            if only_ge and opp_len < my_len:
+                continue
+            if only_lt and opp_len >= my_len:
+                continue
+
+            opp_head = st.snake_pos.get(oid)
+            if opp_head and len(opp_head) > 0:
+                ohx, ohy = opp_head[0]
+                d = abs(hx - ohx) + abs(hy - ohy)
+                if d < min_d:
+                    min_d = float(d)
+        return min_d
+
+    def _reshape_reward(
+        self,
+        pid: int,
+        base_reward: float,
+        *,
+        st_before: Any,
+        st_after: Any,
+        died: bool,
+    ) -> float:
+        """Optional reward shaping for grow-then-hunt or pure survival."""
+        if not self.survival_shaping:
+            return float(base_reward)
+        r = float(base_reward)
+        if died:
+            return r
+
+        aggressive = self.survival_strategy not in {"defensive", "survive", "survival"}
+        r += self.living_bonus
+        
+        # Determine early vs endgame (based on number of snakes alive)
+        num_alive = sum(1 for alive in st_before.snakes_alive if alive)
+        endgame = num_alive <= 2
+
+        # 1. Starvation Urgency
+        health_before = int(st_before.snake_health[pid])
+        len_before = int(st_before.snake_len[pid])
+        len_after = int(st_after.snake_len[pid]) if st_after.snakes_alive[pid] else len_before
+        
+        ate_food = len_after > len_before
+        if ate_food:
+            if aggressive:
+                # Base growth reward
+                growth_reward = self.length_penalty 
+                # Urgency multiplier: if health was very low, increase the reward
+                if health_before < 30:
+                    growth_reward *= 3.0
+                elif health_before > 80:
+                    growth_reward = 0.0   # No reward for being greedy when full
+                r += growth_reward
+            else:
+                r -= self.length_penalty
+
+        # 2. Board Control (Edge Penalty when threatened)
+        # Check if head is on the edge of the board
+        head_pos = st_after.snake_pos.get(pid)
+        if head_pos and len(head_pos) > 0:
+            hx, hy = int(head_pos[0][0]), int(head_pos[0][1])
+            w, h = self.env.cfg.w, self.env.cfg.h
+            on_edge = (hx == 0 or hx == w - 1 or hy == 0 or hy == h - 1)
+            
+            if on_edge:
+                # Check if threatened by a larger/equal snake
+                dist_to_threat = self._min_head_dist(st_after, pid, only_ge=True)
+                if dist_to_threat <= 3:
+                    r -= 0.1  # Penalize being trapped on the edge near a threat
+
+        # 3. Kill Bonus
+        for oid, alive_before in enumerate(st_before.snakes_alive):
+            if oid != pid and alive_before and not st_after.snakes_alive[oid]:
+                # Opponent died. Check if we were adjacent to them in st_before
+                opp_body = st_before.snake_pos.get(oid) or []
+                our_body = st_before.snake_pos.get(pid) or []
+                if opp_body and our_body:
+                    ohx, ohy = int(opp_body[0][0]), int(opp_body[0][1])
+                    # Distance from their head to any part of our body
+                    min_dist = min(abs(ohx - int(bx)) + abs(ohy - int(by)) for bx, by in our_body)
+                    if min_dist <= 2:
+                        r += 0.5  # Massive reward for eliminating an opponent nearby
+                        break
+
+        # 4. Proximity strategy
+        if st_after.snakes_alive[pid]:
+            # Avoid closing on equal/longer heads.
+            d0 = self._min_head_dist(st_before, pid, only_ge=True)
+            d1 = self._min_head_dist(st_after, pid, only_ge=True)
+            if np.isfinite(d0) and np.isfinite(d1) and d1 < d0:
+                # Heavy penalty if not endgame
+                multiplier = 1.0 if endgame else 2.0
+                r -= self.proximity_penalty * (d0 - d1) * multiplier
+
+            if aggressive:
+                # Reward closing on shorter prey (hunt).
+                p0 = self._min_head_dist(st_before, pid, only_lt=True)
+                p1 = self._min_head_dist(st_after, pid, only_lt=True)
+                if np.isfinite(p0) and np.isfinite(p1) and p1 < p0:
+                    # Double hunting reward in endgame
+                    multiplier = 2.0 if endgame else 0.0  # In early game, don't hunt
+                    r += self.proximity_penalty * (p0 - p1) * multiplier
+
+        return float(np.clip(r, -1.0, 1.0))
 
     def ppo_update(self, buffer: RolloutBuffer, last_value: float, episode_idx: int) -> Dict[str, float]:
         advantages, returns = buffer.compute_gae(last_value, self.gamma, self.gae_lambda)
@@ -172,6 +307,9 @@ class PPOTrainingLoop:
         actions = torch.tensor([s.action for s in buffer.steps], dtype=torch.int64, device=self.device)
         old_log_probs = torch.tensor(
             [s.log_prob for s in buffer.steps], dtype=torch.float32, device=self.device
+        )
+        old_values = torch.tensor(
+            [s.value for s in buffer.steps], dtype=torch.float32, device=self.device
         )
         returns_t = torch.tensor(returns, dtype=torch.float32, device=self.device)
         advantages_t = torch.tensor(advantages, dtype=torch.float32, device=self.device)
@@ -191,6 +329,7 @@ class PPOTrainingLoop:
                 mb_obs = obs_arr[idx]
                 mb_actions = actions[idx]
                 mb_old_log = old_log_probs[idx]
+                mb_old_values = old_values[idx]
                 mb_returns = returns_t[idx]
                 mb_adv = advantages_t[idx]
 
@@ -200,9 +339,14 @@ class PPOTrainingLoop:
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = nn.functional.mse_loss(values, mb_returns)
+
+                v_clipped = mb_old_values + torch.clamp(values - mb_old_values, -self.clip_eps, self.clip_eps)
+                v_loss1 = nn.functional.mse_loss(values, mb_returns, reduction="none")
+                v_loss2 = nn.functional.mse_loss(v_clipped, mb_returns, reduction="none")
+                value_loss = torch.max(v_loss1, v_loss2).mean()
+
                 ent = entropy.mean()
-                loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * ent
+                loss = policy_loss + self.value_coef * value_loss - self.current_entropy_coef * ent
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.optimizer.step()
@@ -246,7 +390,16 @@ class PPOTrainingLoop:
         buffer = RolloutBuffer()
         episode_idx = 0
 
+        self.lr_scheduler = torch.optim.lr_scheduler.LinearLR(
+            self.optimizer,
+            start_factor=1.0,
+            end_factor=self.lr_end / self.lr if self.lr > 0 else 0.0,
+            total_iters=max(1, num_episodes)
+        )
+
         while episode_idx < num_episodes:
+            progress = min(1.0, episode_idx / max(1, num_episodes))
+            self.current_entropy_coef = self.entropy_coef + progress * (self.entropy_coef_end - self.entropy_coef)
             self.env.reset()
             ep_returns = np.zeros(self.env.num_players, dtype=np.float64)
             ep_steps = 0
@@ -256,18 +409,26 @@ class PPOTrainingLoop:
                 obs, _, _ = self.env.get_obs()
                 pat = list(self.env.players_at_turn())
                 actions, log_probs, values = self._select_actions(obs)
+                st_before = self.env.get_state()
                 rewards, done, _ = self.env.step(actions)
+                st_after = self.env.get_state()
+                
                 self.total_env_steps += 1
                 ep_steps += 1
                 ep_returns += rewards
 
                 for row_idx, pid in enumerate(pat):
+                    raw_reward = float(rewards[pid])
+                    died = not st_after.snakes_alive[pid]
+                    shaped_reward = self._reshape_reward(
+                        pid, raw_reward, st_before=st_before, st_after=st_after, died=died
+                    )
                     buffer.push(
                         RolloutStep(
                             obs=obs[row_idx].copy(),
                             action=actions[row_idx],
                             log_prob=log_probs[row_idx],
-                            reward=float(rewards[pid]),
+                            reward=shaped_reward,
                             done=done,
                             value=values[row_idx],
                         )
@@ -296,6 +457,7 @@ class PPOTrainingLoop:
                 buffer.clear()
 
             episode_idx += 1
+            self.lr_scheduler.step()
             self.metrics.log_episode_end(episode_idx, ep_steps, ep_returns)
             if on_episode_end is not None:
                 on_episode_end(episode_idx)

@@ -24,12 +24,22 @@ def main() -> None:
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr-end", type=float, default=0.0, help="Learning rate at end of training")
     parser.add_argument("--rollout-steps", type=int, default=2048)
     parser.add_argument("--ppo-epochs", type=int, default=4)
-    parser.add_argument("--minibatch-size", type=int, default=64)
+    parser.add_argument("--minibatch-size", type=int, default=256)
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
+    parser.add_argument("--entropy-end", type=float, default=0.001, help="Entropy coefficient at end of training")
     parser.add_argument("--value-coef", type=float, default=0.5)
+    
+    # Reward Shaping
+    parser.add_argument("--survival-shaping", action="store_true", help="Enable Rainbow-style reward shaping")
+    parser.add_argument("--living-bonus", type=float, default=0.005)
+    parser.add_argument("--length-penalty", type=float, default=0.01)
+    parser.add_argument("--proximity-penalty", type=float, default=0.005)
+    parser.add_argument("--survival-strategy", type=str, default="aggressive", choices=["aggressive", "defensive", "survive"])
+    
     parser.add_argument("--gui", action="store_true")
     parser.add_argument("--gui-every", type=int, default=1)
     parser.add_argument(
@@ -103,12 +113,19 @@ def main() -> None:
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
         lr=args.lr,
+        lr_end=args.lr_end,
         rollout_steps=args.rollout_steps,
         ppo_epochs=args.ppo_epochs,
         minibatch_size=args.minibatch_size,
         clip_eps=args.clip_eps,
         entropy_coef=args.entropy_coef,
+        entropy_coef_end=args.entropy_end,
         value_coef=args.value_coef,
+        survival_shaping=args.survival_shaping,
+        living_bonus=args.living_bonus,
+        length_penalty=args.length_penalty,
+        proximity_penalty=args.proximity_penalty,
+        survival_strategy=args.survival_strategy,
         gui=gui,
         gui_every=args.gui_every,
         eval_every=args.eval_every,
