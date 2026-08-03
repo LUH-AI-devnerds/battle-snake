@@ -47,10 +47,22 @@ class PPOPolicy(BaseModel):
         return int(action.item()), dist.log_prob(action), self.value(obs_np)[0]
 
     def evaluate_actions(
-        self, obs_np: np.ndarray, actions: torch.Tensor
+        self,
+        obs_np: np.ndarray,
+        actions: torch.Tensor,
+        legal_mask: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits = self.actor_logits(obs_np)
-        values = self.critic(self._features(obs_np)).squeeze(-1)
+        """Log-probs / values / entropy for stored actions.
+
+        ``legal_mask`` must be the mask that was applied when the action was
+        sampled — evaluating against the unmasked distribution makes the PPO
+        ratio compare two different distributions and breaks the update.
+        """
+        features = self._features(obs_np)
+        logits = self.actor(features)
+        values = self.critic(features).squeeze(-1)
+        if legal_mask is not None:
+            logits = logits.masked_fill(~legal_mask.bool(), -1e9)
         dist = torch.distributions.Categorical(logits=logits)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()

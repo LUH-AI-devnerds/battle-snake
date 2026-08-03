@@ -26,6 +26,7 @@ from battlesnake_ai.inference.api_adapter import (
 )
 from battlesnake_ai.inference.safe_move import choose_safe_move, legal_moves
 from battlesnake_ai.inference.survival import select_survival_action
+from battlesnake_ai.inference import tactics
 from battlesnake_ai.models.dqn import DQN
 from battlesnake_ai.models.ppo_policy import PPOPolicy
 from battlesnake_ai.models.rainbow_dqn import RainbowDQN
@@ -70,6 +71,11 @@ class SnakeRuntime:
         self.device = dev
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
+        # How the final move is chosen:
+        #   tactics — flood-fill/food/H2H search on the JSON, model breaks ties (default)
+        #   safe    — legacy space heuristic, model breaks ties
+        #   model   — raw policy, only filtered for immediate suicide
+        self.move_strategy = os.environ.get("MOVE_STRATEGY", "tactics").strip().lower()
         # Soft combat ranking (optional). Hard safe_move filter is always on.
         self.survival_filter = _env_flag("SURVIVAL_FILTER", False)
         self.hunger_health = int(os.environ.get("SURVIVAL_HUNGER_HEALTH", "35"))
@@ -79,6 +85,7 @@ class SnakeRuntime:
         self._current_game_id: Optional[str] = None
         self._fallback_count = 0
         self._last_decision: Dict[str, Any] = {}
+        self._model_ranking: List[str] = []
         # Blackout is always 4 snakes on 15x15 even when FOW hides opponents.
         self._force_players = int(os.environ.get("FORCE_NUM_PLAYERS", "4"))
         self._env_cache: Dict[Tuple[int, int, int], Any] = {}
@@ -225,6 +232,7 @@ class SnakeRuntime:
         t0 = time.perf_counter()
         preferred: Optional[str] = None
         source = "safe"
+        self._model_ranking = []
         try:
             self._ensure_game(payload)
             if self._pid_by_snake_id:
@@ -239,17 +247,39 @@ class SnakeRuntime:
             )
             source = "safe_exception"
 
-        move = choose_safe_move(payload, preferred=preferred)
+        debug: Dict[str, Any] = {}
+        try:
+            if self.move_strategy == "tactics":
+                move, debug = tactics.choose_move(payload, preferred=preferred)
+                source = f"tactics/{source}"
+            elif self.move_strategy == "model" and self._model_ranking:
+                # Policy decides, restricted to moves that are not suicide and do
+                # not lose a head-to-head. Use when the net outplays the search.
+                safe = tactics.safe_moves(payload)
+                move = next((m for m in self._model_ranking if m in safe), None) or choose_safe_move(
+                    payload, preferred=preferred
+                )
+                source = f"model_safe/{source}"
+            else:
+                move = choose_safe_move(payload, preferred=preferred)
+        except Exception:
+            self._fallback_count += 1
+            logger.exception("Move selection failed; using safe JSON move")
+            move = choose_safe_move(payload, preferred=preferred)
+            source = "safe_exception"
+
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self._last_decision = {
             "move": move,
             "preferred": preferred,
             "source": source,
+            "strategy": self.move_strategy,
             "legal": legal_moves(payload),
             "fallback_count": self._fallback_count,
             "ms": round(elapsed_ms, 1),
             "game_id": (payload.get("game") or {}).get("id"),
             "turn": payload.get("turn"),
+            **({"tactics": debug} if debug else {}),
         }
         if preferred is not None and move != preferred:
             logger.info(
@@ -290,6 +320,7 @@ class SnakeRuntime:
 
         row_idx = players_here.index(your_pid)
         sl = obs[row_idx : row_idx + 1]
+        self._model_ranking = self._rank_moves(sl)
         action = self._select_action(sl, your_pid)
         la = list(self._env.available_actions(your_pid))
         if action not in la:
@@ -297,6 +328,16 @@ class SnakeRuntime:
                 return None
             action = int(random.choice(la))
         return action_index_to_move(action)
+
+    def _rank_moves(self, obs_slice: np.ndarray) -> List[str]:
+        """All four moves ordered by model score (best first)."""
+        with torch.no_grad():
+            if isinstance(self.model, PPOPolicy):
+                scores = self.model.actor_logits(obs_slice).detach().cpu().numpy()[0]
+            else:
+                scores = self.model(obs_slice).detach().cpu().numpy()[0]
+        order = np.argsort(-scores)
+        return [ACTION_NAMES[int(a)] for a in order]
 
     def _select_action(self, obs_slice: np.ndarray, pid: int) -> int:
         la = list(self._env.available_actions(pid))
@@ -363,7 +404,7 @@ class SnakeRuntime:
 def default_checkpoint_from_env() -> Path:
     raw = os.environ.get(
         "BATTLE_SNAKE_CHECKPOINT",
-        "best_checkpoint/ppo_best.pt",
+        "best_checkpoint/ppo_bc_teacher.pt",
     )
     root = Path(__file__).resolve().parents[4]
     p = Path(raw)

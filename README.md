@@ -237,6 +237,14 @@ Blackout runs **restricted standard** games: 15×15 board, 4 snakes, **view radi
 
 `best_checkpoint/rainbow_v2_best.pt` (Rainbow v2: feature_dim 128, noisy nets, self-play)
 
+**Move selection (`MOVE_STRATEGY`, default `tactics`).** Measured over 4-player
+`restricted_standard` games, the tactical JSON search in
+`agent/src/battlesnake_ai/inference/tactics.py` (flood fill + food urgency +
+head-to-head avoidance/hunting) wins ~50% of games while the best trained
+checkpoint wins ~2–5% against the same opponents. So `tactics` decides the move
+and the policy is only consulted to break near-ties. Set `MOVE_STRATEGY=safe`
+for the legacy space heuristic or `MOVE_STRATEGY=model` for the raw policy.
+
 Requires **hisss ≥ 1.3.0** (`requirements-server.txt`). With older hisss the server would catch a `BattleSnakeState` constructor error on every `/move` and silently return `FALLBACK_MOVE=up`, making the snake walk north into the wall.
 
 ### Endpoints

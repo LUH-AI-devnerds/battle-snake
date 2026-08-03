@@ -6,13 +6,21 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
+import torch
+
 from battlesnake_ai.env.builder import make_env
 from battlesnake_ai.inference.agent_loader import copy_rainbow_backbone_to_ppo, load_agent
 from battlesnake_ai.models.ppo_policy import PPOPolicy
 from battlesnake_ai.models.rainbow_dqn import RainbowDQN
 from battlesnake_ai.training.checkpoint import default_checkpoint_dir, save_checkpoint
 from battlesnake_ai.training.logger import setup_logger
-from battlesnake_ai.training.ppo_loop import PPOTrainingLoop, PPOMetricsLogger
+from battlesnake_ai.training.ppo_loop import (
+    PPOMetricsLogger,
+    PPOTrainingLoop,
+    bot_opponent,
+    model_opponent,
+)
+from battlesnake_ai.training.heuristic_opponents import get_bot_by_name
 from battlesnake_ai.viz.board_gui import BoardGUI
 
 
@@ -91,6 +99,13 @@ def main() -> None:
         freeze_encoder=args.freeze_encoder,
         eval_every=args.eval_every,
         eval_episodes=args.eval_episodes,
+        # Seed the league with the source Rainbow net plus the heuristic bots;
+        # a single frozen opponent is too narrow to train a general policy.
+        opponents=[
+            model_opponent(os.path.basename(args.rainbow_checkpoint), rainbow_model, torch.device("cpu")),
+            *[bot_opponent(get_bot_by_name(n)) for n in ("flood_fill", "aggressive_hunter", "cautious")],
+        ],
+        self_play_prob=0.25,
     )
 
     ckpt_dir = (
