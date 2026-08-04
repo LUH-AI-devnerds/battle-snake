@@ -149,6 +149,7 @@ class PPOTrainingLoop:
         gui: Optional[Any] = None,
         gui_every: int = 1,
         freeze_encoder: bool = False,
+        freeze_batchnorm: bool = True,
         eval_every: int = 0,
         eval_episodes: int = 50,
         opponents: Optional[Sequence[Opponent]] = None,
@@ -188,6 +189,16 @@ class PPOTrainingLoop:
         self.self_play_prob = self_play_prob if self.opponents else 1.0
 
         self.policy.to(self.device)
+        # The backbone is BatchNorm-based. In train mode BN normalises with the
+        # statistics of whatever batch it sees, so a rollout (batch of 1) and an
+        # update (batch of 512) evaluate *different functions*: measured
+        # KL(collect || update) = 0.15 on an untouched policy, which is exactly
+        # the bogus ratio PPO then tries to correct. Train-mode rollouts also
+        # drift the running stats the served model uses. Keeping the policy in
+        # eval mode makes collection, update and deployment identical.
+        self.freeze_batchnorm = freeze_batchnorm
+        if self.freeze_batchnorm:
+            self.policy.eval()
         if freeze_encoder:
             for p in self.policy.backbone.parameters():
                 p.requires_grad = False
@@ -347,6 +358,10 @@ class PPOTrainingLoop:
         n = len(batch)
         if n < 2:
             return {}
+        if self.freeze_batchnorm:
+            self.policy.eval()  # same normalisation as when the data was collected
+        else:
+            self.policy.train()
 
         adv = batch.advantages
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
@@ -573,7 +588,7 @@ class PPOTrainingLoop:
         import hisss
 
         pool = list(opponents or self.eval_opponents) or [random_opponent()]
-        was_training = self.policy.training
+        was_training = self.policy.training and not self.freeze_batchnorm
         self.policy.eval()
         eval_env = hisss.BattleSnakeGame(self.env.cfg)
 

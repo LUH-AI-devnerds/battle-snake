@@ -89,6 +89,9 @@ def main() -> None:
     parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--resume-checkpoint", type=str, default=None, metavar="PATH")
     parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--no-freeze-batchnorm", action="store_true",
+                        help="Let BatchNorm use batch statistics during training (breaks the "
+                             "PPO ratio: collection and update then normalise differently)")
 
     args = parser.parse_args()
 
@@ -158,6 +161,7 @@ def main() -> None:
         eval_episodes=args.eval_episodes,
         opponents=opponents,
         self_play_prob=args.self_play_prob,
+        freeze_batchnorm=not args.no_freeze_batchnorm,
     )
 
     ckpt_dir = (
@@ -167,7 +171,15 @@ def main() -> None:
     )
     os.makedirs(ckpt_dir, exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Score the starting policy first. Without this the first benchmark always
+    # becomes "best", so a run that degrades a good warm start still publishes
+    # its own regression.
     best_points = float("-inf")
+    if args.benchmark_every > 0:
+        initial = loop.evaluate_policy(args.benchmark_episodes, opponents=benchmark)
+        metrics.log_evaluation(0, "benchmark/initial", initial)
+        best_points = initial["avg_points"]
 
     def build_meta(extra: dict | None = None) -> dict:
         meta = {

@@ -44,7 +44,8 @@ srun python3 agent/scripts/train_ppo.py \
     --episodes 20000 \
     --rollout-steps 8192 \
     --minibatch-size 512 \
-    --lr 1e-4 --lr-end 2e-5 \
+    --lr 5e-5 --lr-end 1e-5 \
+    --entropy-coef 0.003 --entropy-end 0.001 \
     --self-play-prob 0.25 \
     --eval-every 250 --eval-episodes 50 \
     --benchmark-every 500 --benchmark-episodes 100 \

@@ -47,6 +47,12 @@ def collect(env, teacher, policy, device, steps: int, epsilon: float, gamma: flo
     the current policy acts (self-induced states) — the label stays the
     teacher's choice for that state.
     """
+    # Roll out with the deployment-time normalisation: a train-mode forward pass
+    # on a single observation both misnormalises the output and drifts the
+    # BatchNorm running statistics that inference relies on.
+    if policy is not None:
+        policy.eval()
+
     obs_buf: list[np.ndarray] = []
     act_buf: list[int] = []
     mask_buf: list[np.ndarray] = []
