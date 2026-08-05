@@ -11,12 +11,31 @@ Run locally:
 
 from __future__ import annotations
 
-import logging
 import os
+
+# Must be set before torch's OpenMP/MKL runtime initializes (first import
+# anywhere in the process), so this has to come before every other import.
+# Containers like Railway report the host's full CPU count via os.cpu_count()
+# while granting a small CPU quota. PyTorch's default thread pool sizes itself
+# to that reported count, so on such a host it spawns dozens of threads that
+# contend for a sliver of real CPU -- for a single small forward pass per
+# request that overhead dominates. Measured: 12.8 ms/move locally (128 cores,
+# unconstrained) vs 460-1000 ms/move on Railway with default threading,
+# against a 500 ms hard budget. Pinning to 1 thread fixes it because there is
+# no parallelism to exploit in a batch-of-one 15x15x17 conv forward pass.
+for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict
+
+import torch
+
+torch.set_num_threads(1)
+torch.set_num_interop_threads(1)
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field, field_validator

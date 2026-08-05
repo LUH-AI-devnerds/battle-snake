@@ -233,10 +233,15 @@ class SnakeRuntime:
         preferred: Optional[str] = None
         source = "safe"
         self._model_ranking = []
+        t_ensure = t_model = t_strategy = 0.0
         try:
+            t1 = time.perf_counter()
             self._ensure_game(payload)
+            t_ensure = (time.perf_counter() - t1) * 1000.0
             if self._pid_by_snake_id:
+                t1 = time.perf_counter()
                 preferred = self._model_move(payload)
+                t_model = (time.perf_counter() - t1) * 1000.0
                 if preferred is not None:
                     source = "model"
         except Exception:
@@ -248,6 +253,7 @@ class SnakeRuntime:
             source = "safe_exception"
 
         debug: Dict[str, Any] = {}
+        t1 = time.perf_counter()
         try:
             if self.move_strategy == "tactics":
                 move, debug = tactics.choose_move(payload, preferred=preferred)
@@ -267,6 +273,7 @@ class SnakeRuntime:
             logger.exception("Move selection failed; using safe JSON move")
             move = choose_safe_move(payload, preferred=preferred)
             source = "safe_exception"
+        t_strategy = (time.perf_counter() - t1) * 1000.0
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         self._last_decision = {
@@ -277,6 +284,16 @@ class SnakeRuntime:
             "legal": legal_moves(payload),
             "fallback_count": self._fallback_count,
             "ms": round(elapsed_ms, 1),
+            # Stage breakdown, added to diagnose a latency regression seen only
+            # under Railway's container (12.8 ms locally vs 450-1000 ms served)
+            # that a local CPU-quota simulation could not reproduce. Remove once
+            # the cause is confirmed and fixed.
+            "stages_ms": {
+                "ensure_game": round(t_ensure, 1),
+                "model_move": round(t_model, 1),
+                "strategy": round(t_strategy, 1),
+            },
+            "torch_threads": torch.get_num_threads(),
             "game_id": (payload.get("game") or {}).get("id"),
             "turn": payload.get("turn"),
             **({"tactics": debug} if debug else {}),
