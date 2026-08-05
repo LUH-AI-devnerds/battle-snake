@@ -75,7 +75,7 @@ class SnakeRuntime:
         #   tactics — flood-fill/food/H2H search on the JSON, model breaks ties (default)
         #   safe    — legacy space heuristic, model breaks ties
         #   model   — raw policy, only filtered for immediate suicide
-        self.move_strategy = os.environ.get("MOVE_STRATEGY", "tactics").strip().lower()
+        self.move_strategy = os.environ.get("MOVE_STRATEGY", "model").strip().lower()
         # Soft combat ranking (optional). Hard safe_move filter is always on.
         self.survival_filter = _env_flag("SURVIVAL_FILTER", False)
         self.hunger_health = int(os.environ.get("SURVIVAL_HUNGER_HEALTH", "35"))
@@ -404,7 +404,7 @@ class SnakeRuntime:
 def default_checkpoint_from_env() -> Path:
     raw = os.environ.get(
         "BATTLE_SNAKE_CHECKPOINT",
-        "best_checkpoint/ppo_bc_teacher.pt",
+        "best_checkpoint/ppo_league_best.pt",
     )
     root = Path(__file__).resolve().parents[4]
     p = Path(raw)

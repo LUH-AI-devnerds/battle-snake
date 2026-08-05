@@ -1,0 +1,39 @@
+{
+  "algorithm": "ppo",
+  "in_channels": 17,
+  "num_actions": 4,
+  "mode": "restricted_standard",
+  "num_players": 4,
+  "run_id": "20260804_235129",
+  "league": [
+    "bot:flood_fill",
+    "bot:food_chaser",
+    "bot:aggressive_hunter",
+    "bot:cautious"
+  ],
+  "self_play_prob": 0.25,
+  "hyperparams": {
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "lr": 5e-05,
+    "rollout_steps": 8192,
+    "ppo_epochs": 4,
+    "minibatch_size": 512,
+    "clip_eps": 0.2,
+    "target_kl": 0.02,
+    "entropy_coef": 0.003,
+    "survival_shaping": true
+  },
+  "benchmark": {
+    "win_rate": 0.67,
+    "avg_points": 1.53,
+    "avg_steps": 235.34,
+    "avg_len": 21.85
+  },
+  "benchmark_league": [
+    "aggressive_hunter",
+    "cautious",
+    "flood_fill"
+  ],
+  "episode": 19500
+}

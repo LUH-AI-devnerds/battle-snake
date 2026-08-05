@@ -2,9 +2,9 @@
 #SBATCH --job-name=snake-ppo
 #SBATCH --output=logs/slurm-%j.out
 #SBATCH --error=logs/slurm-%j.err
-#SBATCH --partition=p_48G
+#SBATCH --partition=p_12G
 #SBATCH --nodes=1
-#SBATCH --nodelist=gpu-l40s-01
+#SBATCH --exclude=gpu-p1080ti-01
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=40G
