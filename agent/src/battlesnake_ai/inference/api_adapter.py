@@ -17,6 +17,19 @@ ACTION_FROM_NAME = {name: idx for idx, name in enumerate(ACTION_NAMES)}
 _STATE_PARAMS = set(inspect.signature(BattleSnakeState.__init__).parameters)
 
 
+def _int_or(value: Any, default: int) -> int:
+    """``int(x)`` treating both a missing key and an explicit ``null`` as default.
+
+    ``dict.get(key, default)`` only substitutes ``default`` when the key is
+    absent; the live Blackout API sends ``"health": null`` / ``"length": null``
+    for eliminated snakes in ``dead_snakes``, so ``.get`` returns ``None`` and
+    ``int(None)`` raised on nearly every /move once a game had an elimination —
+    silently falling back to the crude safe-move heuristic for the rest of the
+    match instead of running the trained policy.
+    """
+    return int(value) if value is not None else default
+
+
 def _snake_id(snake: Mapping[str, Any]) -> str:
     return str(snake.get("id", snake.get("name", "")))
 
@@ -132,9 +145,9 @@ def request_to_state(
             continue
         coords = _body_coords(snake)
         snake_pos[pid] = coords or _ghost_corner(pid, width, height)
-        health = int(snake.get("health", 0))
+        health = _int_or(snake.get("health"), 0)
         snake_health[pid] = health
-        snake_len[pid] = int(snake.get("length", len(coords) or 3))
+        snake_len[pid] = _int_or(snake.get("length"), len(coords) or 3)
         elim = snake.get("elimination") or snake.get("elimination_event")
         # Dead-list entries or explicit elimination → dead; otherwise alive.
         snakes_alive[pid] = sid not in dead_ids and health > 0 and elim is None
@@ -147,8 +160,8 @@ def request_to_state(
         if pid == your_pid:
             you = payload.get("you")
             snake_pos[pid] = _body_coords(you) if you else _ghost_corner(pid, width, height)
-            snake_health[pid] = int((you or {}).get("health", 100))
-            snake_len[pid] = int((you or {}).get("length", 3))
+            snake_health[pid] = _int_or((you or {}).get("health"), 100)
+            snake_len[pid] = _int_or((you or {}).get("length"), 3)
             snakes_alive[pid] = True
             continue
         ghost = ghosts.get(pid)
@@ -181,7 +194,7 @@ def request_to_state(
         if x < 0 or y < 0:
             continue
         food_pos.append([x, y])
-        food_spawn_turns.append(int(fp.get("spawn_turn", turn)))
+        food_spawn_turns.append(_int_or(fp.get("spawn_turn"), turn))
 
     kwargs: Dict[str, Any] = {
         "turn": turn,

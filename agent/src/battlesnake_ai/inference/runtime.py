@@ -266,6 +266,7 @@ class SnakeRuntime:
                     payload, preferred=preferred
                 )
                 source = f"model_safe/{source}"
+                debug = {"model_ranking": list(self._model_ranking), "safe_moves": safe}
             else:
                 move = choose_safe_move(payload, preferred=preferred)
         except Exception:
