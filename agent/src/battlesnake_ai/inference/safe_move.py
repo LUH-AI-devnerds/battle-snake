@@ -126,8 +126,33 @@ def flood_fill(
     return len(seen)
 
 
+def enemy_heads(payload: Mapping[str, Any]) -> List[Tuple[int, int, int]]:
+    """(x, y, length) for every visible living opponent."""
+    you_id = str((payload.get("you") or {}).get("id", ""))
+    board = payload.get("board") or payload
+    out: List[Tuple[int, int, int]] = []
+    for snake in board.get("snakes") or []:
+        if str(snake.get("id", "")) == you_id:
+            continue
+        if int(snake.get("health") or 0) <= 0:
+            continue
+        if snake.get("elimination") or snake.get("elimination_event"):
+            continue
+        body = _body(snake)
+        if not body:
+            continue
+        out.append((body[0][0], body[0][1], int(snake.get("length") or len(body))))
+    return out
+
+
 def score_move(payload: Mapping[str, Any], move: str) -> float:
-    """Prefer open space, then food when hungry / short, then stay off edges."""
+    """Prefer open space, then food when hungry / short, then stay off edges.
+
+    Also refuses to step within reach of an equal-or-longer snake's head. This
+    is the last-resort path -- it used to have no head-to-head logic at all, so
+    whenever the model path threw, the snake would happily walk alongside a
+    much bigger snake and lose the collision.
+    """
     you = payload.get("you") or {}
     body = _body(you)
     if not body:
@@ -141,6 +166,14 @@ def score_move(payload: Mapping[str, Any], move: str) -> float:
     blocked_after = set(blocked)
     blocked_after.add(nxt)
     space = flood_fill(nxt, width=width, height=height, blocked=blocked_after)
+
+    # Losing head-to-head: an equal/longer snake can reach this cell next turn.
+    our_len = int(you.get("length") or len(body))
+    h2h_pen = 0.0
+    for ex, ey, elen in enemy_heads(payload):
+        if elen >= our_len and abs(ex - nxt[0]) + abs(ey - nxt[1]) <= 1:
+            h2h_pen = 50.0
+            break
 
     board = payload.get("board") or payload
     foods = {_xy(f) for f in (board.get("food") or []) if _xy(f)[0] >= 0}
@@ -164,7 +197,7 @@ def score_move(payload: Mapping[str, Any], move: str) -> float:
     cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
     center_bonus = -0.15 * (abs(nxt[0] - cx) + abs(nxt[1] - cy))
 
-    return float(space) + food_bonus - wall_pen + center_bonus
+    return float(space) + food_bonus - wall_pen + center_bonus - h2h_pen
 
 
 def choose_safe_move(

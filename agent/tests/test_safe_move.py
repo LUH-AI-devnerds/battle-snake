@@ -55,3 +55,31 @@ def test_prefers_space_over_wall_charge() -> None:
     p = _payload((7, 13), neck=(7, 12))
     move = choose_safe_move(p, preferred="up")
     assert move != "up"
+
+
+def test_fallback_avoids_losing_head_to_head() -> None:
+    """The last-resort path must not walk alongside a bigger snake.
+
+    This is what actually served every live game while the model path was
+    crashing, and it had no head-to-head logic at all -- the small snake would
+    step right next to a much longer one and lose the collision.
+    """
+    you_body = [(7, 7), (7, 6), (7, 5)]
+    you = {
+        "id": "me", "health": 90, "length": 3,
+        "body": [{"x": x, "y": y} for x, y in you_body],
+        "head": {"x": 7, "y": 7},
+    }
+    big_body = [(9, 7), (10, 7), (11, 7), (12, 7), (13, 7), (14, 7)]
+    big = {
+        "id": "big", "health": 90, "length": 6,
+        "body": [{"x": x, "y": y} for x, y in big_body],
+        "head": {"x": 9, "y": 7},
+    }
+    payload = {
+        "board": {"width": 15, "height": 15, "food": [], "hazards": [],
+                  "snakes": [you, big]},
+        "you": you,
+    }
+    # Stepping right lands on (8,7), adjacent to the length-6 snake's head.
+    assert choose_safe_move(payload) != "right"
