@@ -65,6 +65,11 @@ def main() -> None:
     parser.add_argument("--living-bonus", type=float, default=0.005)
     parser.add_argument("--length-penalty", type=float, default=0.01)
     parser.add_argument("--proximity-penalty", type=float, default=0.005)
+    parser.add_argument("--kill-bonus", type=float, default=0.5)
+    parser.add_argument("--h2h-win-bonus", type=float, default=0.7,
+                        help="Reward for winning an engine-attributed head-to-head")
+    parser.add_argument("--h2h-death-penalty", type=float, default=0.35,
+                        help="Extra penalty for losing a head-to-head (top death cause)")
     parser.add_argument("--survival-strategy", type=str, default="aggressive",
                         choices=["aggressive", "defensive", "survive"])
 
@@ -154,6 +159,15 @@ def main() -> None:
         length_penalty=args.length_penalty,
         proximity_penalty=args.proximity_penalty,
         survival_strategy=args.survival_strategy,
+        kill_bonus=args.kill_bonus,
+        h2h_win_bonus=args.h2h_win_bonus,
+        death_penalties={
+            "head-collision": args.h2h_death_penalty,
+            "snake-self-collision": 0.25,
+            "wall-collision": 0.25,
+            "snake-collision": 0.15,
+            "out-of-health": 0.10,
+        },
         device=device,
         gui=gui,
         gui_every=args.gui_every,

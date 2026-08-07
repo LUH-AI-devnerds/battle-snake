@@ -145,6 +145,9 @@ class PPOTrainingLoop:
         length_penalty: float = 0.01,
         proximity_penalty: float = 0.005,
         survival_strategy: str = "aggressive",
+        kill_bonus: float = 0.5,
+        h2h_win_bonus: float = 0.7,
+        death_penalties: Optional[Dict[str, float]] = None,
         device: Optional[torch.device] = None,
         gui: Optional[Any] = None,
         gui_every: int = 1,
@@ -178,6 +181,23 @@ class PPOTrainingLoop:
         self.length_penalty = length_penalty
         self.proximity_penalty = proximity_penalty
         self.survival_strategy = survival_strategy
+        self.kill_bonus = kill_bonus
+        self.h2h_win_bonus = h2h_win_bonus
+        # Per-cause death penalties, subtracted on top of the env's terminal
+        # reward. Head-to-head and wall/self collisions are blunders the policy
+        # can see coming; running out of health is a slower, more forgivable
+        # planning failure.
+        self.death_penalties: Dict[str, float] = (
+            death_penalties
+            if death_penalties is not None
+            else {
+                "head-collision": 0.35,
+                "snake-self-collision": 0.25,
+                "wall-collision": 0.25,
+                "snake-collision": 0.15,
+                "out-of-health": 0.10,
+            }
+        )
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.gui = gui
         self.gui_every = gui_every
@@ -279,6 +299,33 @@ class PPOTrainingLoop:
                     min_d = float(d)
         return min_d
 
+    @staticmethod
+    def _elimination(st: Any, pid: int) -> Any:
+        events = getattr(st, "elimination_events", None) or {}
+        try:
+            return events.get(pid)
+        except AttributeError:
+            return None
+
+    def _death_cause(self, st: Any, pid: int) -> Optional[str]:
+        ev = self._elimination(st, pid)
+        return getattr(ev, "cause", None) if ev is not None else None
+
+    def _killed_by(self, st: Any, pid: int) -> Optional[int]:
+        """Player index credited with eliminating ``pid``, if any.
+
+        hisss reports this as a name like ``'snake-3'``; map it back to an int
+        so it can be compared against a seat directly.
+        """
+        ev = self._elimination(st, pid)
+        by = getattr(ev, "by", None) if ev is not None else None
+        if by is None:
+            return None
+        if isinstance(by, int):
+            return by
+        digits = "".join(ch for ch in str(by) if ch.isdigit())
+        return int(digits) if digits else None
+
     def _reshape_reward(
         self,
         pid: int,
@@ -293,7 +340,18 @@ class PPOTrainingLoop:
             return float(base_reward)
         r = float(base_reward)
         if died:
-            return r
+            # Every death used to collapse to the same number, so losing a
+            # head-to-head -- the single most avoidable way to die, and the
+            # cause of 57% of this policy's deaths -- carried exactly the same
+            # signal as starving. Separate them so it can learn which to avoid.
+            cause = self._death_cause(st_after, pid)
+            r -= self.death_penalties.get(cause, 0.0)
+            # The env's terminal reward for last place is already -1.0, so
+            # clipping at -1.0 here would silently absorb the whole penalty and
+            # make every death identical again -- the exact thing this is meant
+            # to fix. Give the floor enough headroom for the largest penalty.
+            floor = -1.0 - max(self.death_penalties.values(), default=0.0)
+            return float(np.clip(r, floor, 1.0))
 
         aggressive = self.survival_strategy not in {"defensive", "survive", "survival"}
         r += self.living_bonus
@@ -326,13 +384,21 @@ class PPOTrainingLoop:
 
         for oid, alive_before in enumerate(st_before.snakes_alive):
             if oid != pid and alive_before and not st_after.snakes_alive[oid]:
+                # Credit a head-to-head we actually won, using the engine's own
+                # attribution rather than a proximity guess. This is the reward
+                # for *using* a length advantage instead of merely surviving
+                # with one, which the previous policy never learned to do.
+                if self._killed_by(st_after, oid) == pid:
+                    cause = self._death_cause(st_after, oid)
+                    r += self.h2h_win_bonus if cause == "head-collision" else self.kill_bonus
+                    break
                 opp_body = st_before.snake_pos.get(oid) or []
                 our_body = st_before.snake_pos.get(pid) or []
                 if opp_body and our_body:
                     ohx, ohy = int(opp_body[0][0]), int(opp_body[0][1])
                     min_dist = min(abs(ohx - int(bx)) + abs(ohy - int(by)) for bx, by in our_body)
                     if min_dist <= 2:
-                        r += 0.5
+                        r += self.kill_bonus
                         break
 
         if st_after.snakes_alive[pid]:
