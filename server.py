@@ -28,9 +28,10 @@ for _var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUME
 
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 import torch
 
@@ -54,17 +55,25 @@ if not apply_view_radius_row_index_fix():
     )
 
 from battlesnake_ai.inference.runtime import SnakeRuntime, default_checkpoint_from_env  # noqa: E402
+from battlesnake_ai.inference.telemetry import Telemetry  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger("battlesnake.server")
+# Separate logger so a competition run can be filtered to just the move trace
+# with `grep MOVE` / `grep GAME` in the Railway log viewer.
+move_logger = logging.getLogger("battlesnake.move")
 
 SNAKE_AUTHOR = os.environ.get("SNAKE_AUTHOR", "Battle Snake")
 SNAKE_COLOR = os.environ.get("SNAKE_COLOR", "#4488ff")
+# Per-move logging is on by default: during a leaderboard run the move trace is
+# the only record of what the snake actually did. Set MOVE_LOG=0 to quieten it.
+MOVE_LOG = os.environ.get("MOVE_LOG", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 _runtime: SnakeRuntime | None = None
+_telemetry = Telemetry()
 
 
 class BattlesnakeRequest(BaseModel):
@@ -161,26 +170,136 @@ def health() -> Dict[str, Any]:
     }
 
 
+def _game_id(payload: Mapping[str, Any]) -> str:
+    return str((payload.get("game") or {}).get("id") or "unknown")
+
+
 @app.post("/start")
 def start_game(body: BattlesnakeRequest) -> Dict[str, str]:
     assert _runtime is not None
     payload = body.model_dump()
     _runtime.on_game_start(payload)
-    logger.info("Game start id=%s turn=%s", payload.get("game", {}).get("id"), body.turn)
+    gid = _game_id(payload)
+    _telemetry.on_start(gid)
+    board = payload.get("board") or {}
+    logger.info(
+        "GAME START g=%s turn=%s board=%sx%s snakes=%s",
+        gid, body.turn, board.get("width"), board.get("height"),
+        len(board.get("snakes") or []),
+    )
     return {}
+
+
+def _last_resort_move(payload: Mapping[str, Any]) -> str:
+    """A legal-looking move derived without touching anything that can throw."""
+    try:
+        from battlesnake_ai.inference.safe_move import legal_moves
+
+        options = legal_moves(payload)
+        if options:
+            return options[0]
+    except Exception:
+        pass
+    return os.environ.get("FALLBACK_MOVE", "up")
 
 
 @app.post("/move")
 def move(body: BattlesnakeRequest) -> Dict[str, str]:
     assert _runtime is not None
     payload = body.model_dump()
-    direction = _runtime.decide_move(payload)
+    gid = _game_id(payload)
+    you = payload.get("you") or {}
+
+    # /move must never raise. An exception here becomes a 500, and the engine
+    # treats a failed response as a forfeited move -- strictly worse than any
+    # legal move we could have returned. decide_move guards the model path
+    # internally, but the surrounding code (and choose_safe_move itself) can
+    # still throw on a malformed board, which is how a bad payload turned into
+    # a 500 with the telemetry recording nothing at all.
+    t_handler = time.perf_counter()
+    try:
+        direction = _runtime.decide_move(payload)
+        decision = _runtime.last_decision()
+    except Exception:
+        direction = _last_resort_move(payload)
+        decision = {
+            "move": direction,
+            "source": "handler_exception",
+            "ms": round((time.perf_counter() - t_handler) * 1000.0, 1),
+            "turn": payload.get("turn"),
+            "legal": [],
+        }
+        logger.exception(
+            "MOVE HANDLER CRASHED g=%s turn=%s -- returned %s so the move is not "
+            "forfeited, but the snake is playing blind until this is fixed",
+            gid[:8], payload.get("turn"), direction,
+        )
+
+    _telemetry.on_move(gid, decision, you)
+
+    if MOVE_LOG:
+        source = str(decision.get("source") or "?")
+        ms = float(decision.get("ms") or 0.0)
+        # One compact line per move. Fields are key=value so a competition run
+        # can be sliced with grep/awk straight out of the Railway log viewer.
+        # "!" marks a move the RL path did not produce, or one that ran long.
+        flags = ""
+        if "exception" in source:
+            flags += " !FALLBACK"
+        if ms > 500.0:
+            flags += " !OVER_BUDGET"
+        elif ms > 250.0:
+            flags += " !SLOW"
+        move_logger.info(
+            "MOVE g=%s t=%s mv=%s src=%s ms=%.1f len=%s hp=%s legal=%s%s",
+            gid[:8], decision.get("turn"), direction, source, ms,
+            you.get("length"), you.get("health"),
+            ",".join(decision.get("legal") or []), flags,
+        )
     return {"move": direction}
 
 
 @app.post("/end")
 def end_game(body: BattlesnakeRequest) -> Dict[str, str]:
     assert _runtime is not None
-    _runtime.on_game_end(body.model_dump())
-    logger.info("Game end id=%s", body.game.get("id"))
+    payload = body.model_dump()
+    _runtime.on_game_end(payload)
+    gid = _game_id(payload)
+    summary = _telemetry.on_end(gid, payload)
+    if summary:
+        # The single most useful line in the log during a leaderboard run:
+        # how the game ended, and whether the policy was actually playing it.
+        logger.info(
+            "GAME END g=%s outcome=%s turns=%s len=%s snakes_left=%s "
+            "fallbacks=%s p50=%sms p95=%sms max=%sms",
+            gid[:8], summary["outcome"], summary["turns"], summary["our_length"],
+            summary["snakes_at_end"], summary["fallbacks"],
+            summary["latency_ms"]["p50"], summary["latency_ms"]["p95"],
+            summary["latency_ms"]["max"],
+        )
+        if summary["fallbacks"]:
+            logger.error(
+                "GAME END g=%s served %s/%s moves from the last-resort heuristic "
+                "-- the RL agent was not playing this game",
+                gid[:8], summary["fallbacks"], summary["turns"],
+            )
+    else:
+        logger.info("GAME END g=%s (no recorded moves)", gid[:8])
     return {}
+
+
+@app.get("/stats")
+def stats(recent_games: int = 10) -> Dict[str, Any]:
+    """Live match telemetry. The competition server has no shell, so this is
+    the way to check what the snake is actually doing mid-leaderboard-run."""
+    snap = _telemetry.snapshot(recent_games=max(0, min(recent_games, 60)))
+    snap["healthy"] = _telemetry.healthy()
+    snap["checkpoint"] = os.environ.get("BATTLE_SNAKE_CHECKPOINT", "")
+    snap["strategy"] = os.environ.get("MOVE_STRATEGY", "model")
+    return snap
+
+
+@app.get("/stats/moves")
+def recent_moves(n: int = 50) -> Dict[str, Any]:
+    """Most recent per-move decisions, newest first."""
+    return {"moves": _telemetry.recent_decisions(max(1, min(n, 300)))}
