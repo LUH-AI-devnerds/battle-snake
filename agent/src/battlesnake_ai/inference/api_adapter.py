@@ -153,12 +153,19 @@ def request_to_state(
             continue
         coords = _body_coords(snake)
         snake_pos[pid] = coords or _ghost_corner(pid, width, height)
-        health = _int_or(snake.get("health"), 0)
+        elim = snake.get("elimination") or snake.get("elimination_event")
+        retired = sid in dead_ids or elim is not None
+        # A null health means "not visible", not "dead". Under fog of war we
+        # only see our own health, so defaulting opponents to 0 marked every
+        # unseen snake dead -- hisss then read the board as a sole-survivor
+        # win, is_terminal() went true, and the model was skipped on every
+        # single turn while /move still answered 200 from the heuristic.
+        # Only the dead list and an explicit elimination retire a snake.
+        health = 0 if retired else _int_or(snake.get("health"), 100)
         snake_health[pid] = health
         snake_len[pid] = _int_or(snake.get("length"), len(coords) or 3)
-        elim = snake.get("elimination") or snake.get("elimination_event")
         # Dead-list entries or explicit elimination → dead; otherwise alive.
-        snakes_alive[pid] = sid not in dead_ids and health > 0 and elim is None
+        snakes_alive[pid] = not retired and health > 0
         seen.add(pid)
 
     ghosts = ghosts or {}
