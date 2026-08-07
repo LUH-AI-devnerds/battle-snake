@@ -40,7 +40,15 @@ def _body_coords(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
         body = [snake["head"]]
     out: List[Tuple[int, int]] = []
     for seg in body:
-        x, y = int(seg["x"]), int(seg["y"])
+        # Eliminated snakes can carry null / malformed coordinates; skip those
+        # segments rather than letting the whole /move fall back to the
+        # last-resort heuristic over one bad cell.
+        if not isinstance(seg, Mapping):
+            continue
+        sx, sy = seg.get("x"), seg.get("y")
+        if sx is None or sy is None:
+            continue
+        x, y = int(sx), int(sy)
         if x < 0 or y < 0:
             continue
         out.append((x, y))

@@ -246,10 +246,19 @@ class SnakeRuntime:
                     source = "model"
         except Exception:
             self._fallback_count += 1
-            logger.exception(
-                "Inference failed; using safe JSON move (fallback_count=%s)",
-                self._fallback_count,
-            )
+            # This is never routine. When it fires the RL agent is not playing
+            # at all -- the crude space/food heuristic is. Log the first one
+            # unmistakably, then throttle so a persistent fault cannot bury the
+            # rest of the log at ~3 moves/second.
+            if self._fallback_count == 1 or self._fallback_count % 50 == 0:
+                logger.exception(
+                    "RL PATH DOWN -- serving last-resort heuristic instead of the policy "
+                    "(fallback_count=%s, game=%s, turn=%s). The snake is playing badly "
+                    "until this is fixed.",
+                    self._fallback_count,
+                    (payload.get("game") or {}).get("id"),
+                    payload.get("turn"),
+                )
             source = "safe_exception"
 
         debug: Dict[str, Any] = {}

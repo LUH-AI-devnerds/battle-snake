@@ -130,12 +130,33 @@ def health() -> Dict[str, Any]:
         pass
     ckpt = os.environ.get("BATTLE_SNAKE_CHECKPOINT", "")
     last = _runtime.last_decision() if _runtime is not None else {}
+
+    # A crash in the model path is caught and answered with the last-resort
+    # heuristic, so /move keeps returning 200 and nothing looks wrong from
+    # outside. That is exactly how a null-health TypeError went unnoticed
+    # while the RL agent sat idle for thousands of live moves. Any fallback at
+    # all is a real defect: surface it here instead of hiding it.
+    fallbacks = int(last.get("fallback_count") or 0) if last else 0
+    rl_driving = str(last.get("source") or "").startswith(("model", "tactics"))
+    if _runtime is None or not patch_ok:
+        status = "degraded"
+    elif fallbacks > 0:
+        status = "degraded"
+    elif last and not rl_driving:
+        status = "degraded"
+    else:
+        status = "ok"
+
     return {
-        "status": "ok" if _runtime is not None and patch_ok else "degraded",
+        "status": status,
         "hisss": hisss_ver,
         "view_radius_patch": patch_ok,
         "checkpoint": ckpt,
         "survival_filter": os.environ.get("SURVIVAL_FILTER", "0"),
+        # Non-zero means the RL path threw and the crude heuristic answered.
+        # Should always be 0 in a healthy deployment.
+        "fallback_count": fallbacks,
+        "rl_driving": rl_driving,
         "last_decision": last,
     }
 
