@@ -70,10 +70,15 @@ def _collect_snakes(payload: Mapping[str, Any]) -> List[Mapping[str, Any]]:
 
 
 def _board_dims(payload: Mapping[str, Any]) -> Tuple[int, int]:
-    board = payload.get("board")
-    if board is not None:
-        return int(board["width"]), int(board["height"])
-    return int(payload["width"]), int(payload["height"])
+    """Board size, defaulting to the Blackout 15x15 board when absent.
+
+    Raising here drops the whole move to the last-resort heuristic, which is a
+    far worse outcome than assuming the only board size this competition uses.
+    """
+    src = payload.get("board") or payload
+    w = _int_or(src.get("width"), 15)
+    h = _int_or(src.get("height"), 15)
+    return (w if w > 0 else 15), (h if h > 0 else 15)
 
 
 def _food_list(payload: Mapping[str, Any]) -> List[Mapping[str, Any]]:
@@ -205,7 +210,16 @@ def request_to_state(
     food_pos: List[List[int]] = []
     food_spawn_turns: List[int] = []
     for fp in _food_list(payload):
-        x, y = int(fp["x"]), int(fp["y"])
+        # Skip null / malformed food rather than losing the move over one cell.
+        if not isinstance(fp, Mapping):
+            continue
+        fx, fy = fp.get("x"), fp.get("y")
+        if fx is None or fy is None:
+            continue
+        try:
+            x, y = int(fx), int(fy)
+        except (TypeError, ValueError):
+            continue
         if x < 0 or y < 0:
             continue
         food_pos.append([x, y])

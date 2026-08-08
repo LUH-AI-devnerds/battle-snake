@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -86,6 +87,16 @@ class SnakeRuntime:
         self._fallback_count = 0
         self._last_decision: Dict[str, Any] = {}
         self._model_ranking: List[str] = []
+        # hisss wraps a native game object and is not thread-safe. FastAPI runs
+        # these sync handlers in a thread pool, so two overlapping /move calls
+        # mutate the same env via set_state/get_obs and corrupt its memory --
+        # observed as "double free or corruption (out)" and a core dump at
+        # concurrency 4, which takes the entire server down mid-tournament.
+        # The mutable per-turn state here (_env, _ghosts, _pid_by_snake_id,
+        # _model_ranking) is shared for the same reason, so one lock covers the
+        # whole decision. A move costs ~15 ms against a 500 ms budget, so
+        # serialising overlapping requests is essentially free.
+        self._lock = threading.RLock()
         # Blackout is always 4 snakes on 15x15 even when FOW hides opponents.
         self._force_players = int(os.environ.get("FORCE_NUM_PLAYERS", "4"))
         self._env_cache: Dict[Tuple[int, int, int], Any] = {}
@@ -196,6 +207,10 @@ class SnakeRuntime:
                 used.add(i)
 
     def on_game_start(self, payload: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._on_game_start_locked(payload)
+
+    def _on_game_start_locked(self, payload: Mapping[str, Any]) -> None:
         try:
             self._current_game_id = str((payload.get("game") or {}).get("id", "")) or None
             self._pid_by_snake_id = {}
@@ -216,19 +231,27 @@ class SnakeRuntime:
             logger.exception("on_game_start failed; will re-initialize on first move")
 
     def on_game_end(self, payload: Mapping[str, Any]) -> None:
-        self._pid_by_snake_id = {}
-        self._ghosts = {}
-        self._current_game_id = None
+        with self._lock:
+            self._pid_by_snake_id = {}
+            self._ghosts = {}
+            self._current_game_id = None
         del payload
 
     def _ensure_game(self, payload: Mapping[str, Any]) -> None:
         gid = str((payload.get("game") or {}).get("id", "")) or None
         if gid != self._current_game_id or not self._pid_by_snake_id:
-            self.on_game_start(payload)
+            self._on_game_start_locked(payload)
         else:
             self._merge_player_ids(payload)
 
     def decide_move(self, payload: Mapping[str, Any]) -> str:
+        # Serialised: see the _lock comment in __init__. Overlapping /move
+        # calls previously corrupted the shared native env and killed the
+        # process outright.
+        with self._lock:
+            return self._decide_move_locked(payload)
+
+    def _decide_move_locked(self, payload: Mapping[str, Any]) -> str:
         t0 = time.perf_counter()
         preferred: Optional[str] = None
         source = "safe"
@@ -416,7 +439,8 @@ class SnakeRuntime:
         return masked_argmax(logits, la)
 
     def last_decision(self) -> Dict[str, Any]:
-        return dict(self._last_decision)
+        with self._lock:
+            return dict(self._last_decision)
 
     def close(self) -> None:
         for env in self._env_cache.values():

@@ -25,10 +25,25 @@ _DELTAS: Dict[str, Tuple[int, int]] = {
 _MOVES = ("up", "right", "down", "left")
 
 
-def _xy(pt: Mapping[str, Any] | Sequence[Any]) -> Tuple[int, int]:
-    if isinstance(pt, Mapping):
-        return int(pt["x"]), int(pt["y"])
-    return int(pt[0]), int(pt[1])
+def _xy(pt: Any) -> Optional[Tuple[int, int]]:
+    """Coordinates from a point, or None if it is missing / malformed.
+
+    Returning None rather than raising matters: this runs on the live request
+    path, and an exception here drops the whole move to the crude last-resort
+    heuristic. Fogged and eliminated snakes carry nulls in these fields.
+    """
+    try:
+        if isinstance(pt, Mapping):
+            x, y = pt.get("x"), pt.get("y")
+        elif isinstance(pt, Sequence) and not isinstance(pt, (str, bytes)) and len(pt) >= 2:
+            x, y = pt[0], pt[1]
+        else:
+            return None
+        if x is None or y is None:
+            return None
+        return int(x), int(y)
+    except (TypeError, ValueError):
+        return None
 
 
 def _body(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
@@ -37,11 +52,24 @@ def _body(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
         body = [snake["head"]]
     out: List[Tuple[int, int]] = []
     for seg in body:
-        x, y = _xy(seg)
+        pt = _xy(seg)
+        if pt is None:
+            continue
+        x, y = pt
         if x < 0 or y < 0:  # fog-of-war placeholder
             continue
         if not out or out[-1] != (x, y):
             out.append((x, y))
+    return out
+
+
+def _food_cells(payload: Mapping[str, Any]) -> Set[Tuple[int, int]]:
+    """On-board food cells, skipping nulls and fog-of-war (-1) placeholders."""
+    out: Set[Tuple[int, int]] = set()
+    for f in (_board(payload).get("food") or []):
+        pt = _xy(f)
+        if pt is not None and pt[0] >= 0 and pt[1] >= 0:
+            out.add(pt)
     return out
 
 
@@ -56,8 +84,18 @@ def _board(payload: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _dims(payload: Mapping[str, Any]) -> Tuple[int, int]:
+    """Board size, defaulting to the Blackout 15x15 board if absent/malformed.
+
+    A missing dimension used to raise straight out of the decision path.
+    Guessing the standard board is strictly better than losing the move.
+    """
     b = _board(payload)
-    return int(b["width"]), int(b["height"])
+    try:
+        w = int(b.get("width") or 15)
+        h = int(b.get("height") or 15)
+    except (TypeError, ValueError):
+        return 15, 15
+    return (w if w > 0 else 15), (h if h > 0 else 15)
 
 
 def occupied(payload: Mapping[str, Any], *, ignore_tails: bool = True) -> Set[Tuple[int, int]]:
@@ -211,7 +249,7 @@ def score_move(payload: Mapping[str, Any], move: str) -> float:
     blocked_after.add(nxt)
 
     enemies = enemy_heads(payload)
-    foods = {_xy(f) for f in (_board(payload).get("food") or []) if _xy(f)[0] >= 0}
+    foods = _food_cells(payload)
     max_enemy_len = max((elen for _, _, elen in enemies), default=0)
     can_hunt = any(elen < our_len for _, _, elen in enemies)
     want_food = health < 60 or our_len <= max_enemy_len

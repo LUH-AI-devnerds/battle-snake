@@ -20,10 +20,25 @@ _DELTAS: Dict[str, Tuple[int, int]] = {
 _MOVES = ("up", "right", "down", "left")
 
 
-def _xy(pt: Mapping[str, Any] | Sequence[Any]) -> Tuple[int, int]:
-    if isinstance(pt, Mapping):
-        return int(pt["x"]), int(pt["y"])
-    return int(pt[0]), int(pt[1])
+def _xy(pt: Any) -> Optional[Tuple[int, int]]:
+    """Coordinates, or None if missing / malformed.
+
+    This is the last-resort decision path, so it must be the most defensive
+    code in the repo: anything that raises here escapes to the /move handler
+    and costs the move outright.
+    """
+    try:
+        if isinstance(pt, Mapping):
+            x, y = pt.get("x"), pt.get("y")
+        elif isinstance(pt, Sequence) and not isinstance(pt, (str, bytes)) and len(pt) >= 2:
+            x, y = pt[0], pt[1]
+        else:
+            return None
+        if x is None or y is None:
+            return None
+        return int(x), int(y)
+    except (TypeError, ValueError):
+        return None
 
 
 def _body(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
@@ -32,7 +47,10 @@ def _body(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
         body = [snake["head"]]
     out: List[Tuple[int, int]] = []
     for seg in body:
-        x, y = _xy(seg)
+        pt = _xy(seg)
+        if pt is None:
+            continue
+        x, y = pt
         if x < 0 or y < 0:
             continue
         if not out or out[-1] != (x, y):
@@ -41,8 +59,14 @@ def _body(snake: Mapping[str, Any]) -> List[Tuple[int, int]]:
 
 
 def _board_size(payload: Mapping[str, Any]) -> Tuple[int, int]:
+    """Board size, defaulting to the Blackout 15x15 board when absent."""
     board = payload.get("board") or payload
-    return int(board["width"]), int(board["height"])
+    try:
+        w = int(board.get("width") or 15)
+        h = int(board.get("height") or 15)
+    except (TypeError, ValueError):
+        return 15, 15
+    return (w if w > 0 else 15), (h if h > 0 else 15)
 
 
 def occupied_cells(
@@ -176,7 +200,11 @@ def score_move(payload: Mapping[str, Any], move: str) -> float:
             break
 
     board = payload.get("board") or payload
-    foods = {_xy(f) for f in (board.get("food") or []) if _xy(f)[0] >= 0}
+    foods = set()
+    for f in (board.get("food") or []):
+        _pt = _xy(f)
+        if _pt is not None and _pt[0] >= 0 and _pt[1] >= 0:
+            foods.add(_pt)
     health = int(you.get("health") or 100)
     length = int(you.get("length") or len(body))
     want_food = health < 40 or length <= 4
