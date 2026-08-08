@@ -176,17 +176,23 @@ def _game_id(payload: Mapping[str, Any]) -> str:
 
 @app.post("/start")
 def start_game(body: BattlesnakeRequest) -> Dict[str, str]:
-    assert _runtime is not None
-    payload = body.model_dump()
-    _runtime.on_game_start(payload)
-    gid = _game_id(payload)
-    _telemetry.on_start(gid)
-    board = payload.get("board") or {}
-    logger.info(
-        "GAME START g=%s turn=%s board=%sx%s snakes=%s",
-        gid, body.turn, board.get("width"), board.get("height"),
-        len(board.get("snakes") or []),
-    )
+    # Like /move, this must never raise. The engine does not need anything from
+    # the body, and decide_move re-initialises the game on its first call if
+    # this failed, so swallowing here costs nothing and a 500 might not.
+    try:
+        payload = body.model_dump()
+        gid = _game_id(payload)
+        if _runtime is not None:
+            _runtime.on_game_start(payload)
+        _telemetry.on_start(gid)
+        board = payload.get("board") or {}
+        logger.info(
+            "GAME START g=%s turn=%s board=%sx%s snakes=%s",
+            gid, body.turn, board.get("width"), board.get("height"),
+            len(board.get("snakes") or []),
+        )
+    except Exception:
+        logger.exception("/start failed; first /move will re-initialise the game")
     return {}
 
 
@@ -261,9 +267,17 @@ def move(body: BattlesnakeRequest) -> Dict[str, str]:
 
 @app.post("/end")
 def end_game(body: BattlesnakeRequest) -> Dict[str, str]:
-    assert _runtime is not None
+    try:
+        _end_game_inner(body)
+    except Exception:
+        logger.exception("/end failed (game bookkeeping only; play is unaffected)")
+    return {}
+
+
+def _end_game_inner(body: BattlesnakeRequest) -> None:
     payload = body.model_dump()
-    _runtime.on_game_end(payload)
+    if _runtime is not None:
+        _runtime.on_game_end(payload)
     gid = _game_id(payload)
     summary = _telemetry.on_end(gid, payload)
     if summary:
@@ -285,7 +299,6 @@ def end_game(body: BattlesnakeRequest) -> Dict[str, str]:
             )
     else:
         logger.info("GAME END g=%s (no recorded moves)", gid[:8])
-    return {}
 
 
 @app.get("/stats")
