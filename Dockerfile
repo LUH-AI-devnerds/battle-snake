@@ -36,7 +36,7 @@ ENV SNAKE_COLOR="#4488ff"
 # Measured paired against the policy alone, in the same games: +10 points of
 # win rate on two seeds. Set MOVE_STRATEGY=model to fall back to the previous
 # one-step filter without a redeploy.
-ENV MOVE_STRATEGY="veto"
+ENV MOVE_STRATEGY="model"
 # Per-move lookahead budget. Policy ~15ms + this stays well inside the 500ms
 # deadline even with 8 concurrent games (measured p99 141ms).
 ENV SEARCH_BUDGET_MS="70"
