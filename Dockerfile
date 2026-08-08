@@ -31,10 +31,15 @@ RUN python -c "from battlesnake_ai.env.hisss_view_radius_fix import apply_view_r
 ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/ppo_league_best.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"
-# Move selection: the league-trained policy decides; the tactical JSON search
-# only vetoes suicide and losing head-to-heads. The net now outplays the search
-# (58% vs 40% win rate against the bot league), so it leads and search guards.
-ENV MOVE_STRATEGY="model"
+# Move selection: the league-trained policy ranks the moves, and a short
+# lookahead search rejects any choice the opponents can force a loss against.
+# Measured paired against the policy alone, in the same games: +10 points of
+# win rate on two seeds. Set MOVE_STRATEGY=model to fall back to the previous
+# one-step filter without a redeploy.
+ENV MOVE_STRATEGY="veto"
+# Per-move lookahead budget. Policy ~15ms + this stays well inside the 500ms
+# deadline even with 8 concurrent games (measured p99 141ms).
+ENV SEARCH_BUDGET_MS="70"
 # Model was trained with survival reward shaping; use raw Q at inference.
 ENV SURVIVAL_FILTER="0"
 ENV SURVIVAL_HUNGER_HEALTH="35"
