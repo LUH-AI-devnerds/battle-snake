@@ -22,6 +22,7 @@ from battlesnake_ai.env.builder import make_env
 from battlesnake_ai.inference.agent_loader import load_agent
 from battlesnake_ai.models.ppo_policy import PPOPolicy
 from battlesnake_ai.training.checkpoint import default_checkpoint_dir, load_checkpoint, save_checkpoint
+from battlesnake_ai.training.baseline_opponents import make_baseline
 from battlesnake_ai.training.heuristic_opponents import get_bot_by_name
 from battlesnake_ai.training.logger import setup_logger
 from battlesnake_ai.training.ppo_loop import (
@@ -76,6 +77,8 @@ def main() -> None:
     # Opponent league
     parser.add_argument("--league", nargs="*", default=DEFAULT_LEAGUE,
                         help="Heuristic bot names for opponent seats (empty = none)")
+    parser.add_argument("--baselines", nargs="*", default=[],
+                        help="Official starter baselines (hungry_baseline, random_baseline). These are fog-of-war limited, unlike the heuristic bots which read the whole board.")
     parser.add_argument("--league-checkpoints", nargs="*", default=[],
                         help="Frozen checkpoints (rainbow/dqn/ppo) to add to the league")
     parser.add_argument("--include-random-opponent", action="store_true",
@@ -129,6 +132,9 @@ def main() -> None:
         model, meta = load_agent(path, device=device)
         opponents.append(model_opponent(os.path.basename(path), model, device))
         logger.info("League opponent %s (meta=%s)", path, meta)
+    for bname in (args.baselines or []):
+        opponents.append(bot_opponent(make_baseline(bname)))
+        logger.info("League baseline %s (fog-of-war limited)", bname)
     if args.include_random_opponent:
         opponents.append(random_opponent())
 
