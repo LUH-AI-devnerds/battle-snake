@@ -31,14 +31,15 @@ RUN python -c "from battlesnake_ai.env.hisss_view_radius_fix import apply_view_r
 ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/ppo_league_best.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"
-# Move selection: the league-trained policy ranks the moves, and a short
-# lookahead search rejects any choice the opponents can force a loss against.
-# Measured paired against the policy alone, in the same games: +10 points of
-# win rate on two seeds. Set MOVE_STRATEGY=model to fall back to the previous
-# one-step filter without a redeploy.
+# Move selection: the league-trained policy ranks the moves and a one-step
+# filter rejects suicide and losing head-to-heads.
+#
+# MOVE_STRATEGY=veto adds a lookahead search on top. Do not enable it until the
+# search is fog-aware: it builds its board from the /move payload, which under
+# fog of war truncates opponent bodies and hides food, so it treats occupied
+# cells as free. Measured against the policy alone in the same games with
+# production visibility, it is 13 points *worse* (33.0% vs 46.0%).
 ENV MOVE_STRATEGY="model"
-# Per-move lookahead budget. Policy ~15ms + this stays well inside the 500ms
-# deadline even with 8 concurrent games (measured p99 141ms).
 ENV SEARCH_BUDGET_MS="70"
 # Model was trained with survival reward shaping; use raw Q at inference.
 ENV SURVIVAL_FILTER="0"
