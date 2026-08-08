@@ -73,11 +73,16 @@ class SnakeRuntime:
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
         # How the final move is chosen:
-        #   veto    — policy ranks, lookahead search rejects moves that lose (default)
-        #   model   — policy ranks, one-step head-to-head filter only
+        #   model   — policy ranks, one-step head-to-head filter (default, shipped)
+        #   veto    — model plus a lookahead search that rejects losing moves
         #   tactics — flood-fill/food/H2H search decides, model breaks ties
         #   safe    — legacy space heuristic, model breaks ties
-        self.move_strategy = os.environ.get("MOVE_STRATEGY", "veto").strip().lower()
+        #
+        # The default must match what is deployed. It briefly did not: the code
+        # defaulted to "veto" while the Dockerfile pinned "model", so any host
+        # without that env silently ran a configuration that measured no better
+        # under fog-of-war visibility and spent ~40% of the real latency budget.
+        self.move_strategy = os.environ.get("MOVE_STRATEGY", "model").strip().lower()
         # Time the lookahead veto may spend per move. Blackout allows 500 ms and
         # the policy itself costs ~15 ms, so this stays far inside the budget.
         self.search_budget_ms = float(os.environ.get("SEARCH_BUDGET_MS", "70"))

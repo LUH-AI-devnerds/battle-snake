@@ -277,3 +277,26 @@ def test_playable_payloads_keep_the_policy_driving(rt, mutate, label):
     rt.on_game_start(p)
     move, d = _decide(rt, p)
     assert d["source"].startswith("model_safe"), f"{label}: fell back to {d['source']}"
+
+
+def test_default_strategy_matches_the_deployed_one():
+    """The code default must equal what the Dockerfile ships.
+
+    These drifted apart once: the code defaulted to "veto" while the image
+    pinned "model", so a host without the env ran an unvalidated configuration.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "Dockerfile").read_text()
+    m = re.search(r'ENV MOVE_STRATEGY="([a-z]+)"', dockerfile)
+    assert m, "Dockerfile must pin MOVE_STRATEGY explicitly"
+    shipped = m.group(1)
+
+    runtime_src = (root / "agent/src/battlesnake_ai/inference/runtime.py").read_text()
+    d = re.search(r'os\.environ\.get\("MOVE_STRATEGY",\s*"([a-z]+)"\)', runtime_src)
+    assert d, "runtime must have an explicit MOVE_STRATEGY default"
+    assert d.group(1) == shipped, (
+        f"code default {d.group(1)!r} != Dockerfile {shipped!r}"
+    )
