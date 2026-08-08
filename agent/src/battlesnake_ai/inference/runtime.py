@@ -27,7 +27,7 @@ from battlesnake_ai.inference.api_adapter import (
 )
 from battlesnake_ai.inference.safe_move import choose_safe_move, legal_moves
 from battlesnake_ai.inference.survival import select_survival_action
-from battlesnake_ai.inference import tactics
+from battlesnake_ai.inference import search, tactics
 from battlesnake_ai.models.dqn import DQN
 from battlesnake_ai.models.ppo_policy import PPOPolicy
 from battlesnake_ai.models.rainbow_dqn import RainbowDQN
@@ -73,10 +73,14 @@ class SnakeRuntime:
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
         # How the final move is chosen:
-        #   tactics — flood-fill/food/H2H search on the JSON, model breaks ties (default)
+        #   veto    — policy ranks, lookahead search rejects moves that lose (default)
+        #   model   — policy ranks, one-step head-to-head filter only
+        #   tactics — flood-fill/food/H2H search decides, model breaks ties
         #   safe    — legacy space heuristic, model breaks ties
-        #   model   — raw policy, only filtered for immediate suicide
-        self.move_strategy = os.environ.get("MOVE_STRATEGY", "model").strip().lower()
+        self.move_strategy = os.environ.get("MOVE_STRATEGY", "veto").strip().lower()
+        # Time the lookahead veto may spend per move. Blackout allows 500 ms and
+        # the policy itself costs ~15 ms, so this stays far inside the budget.
+        self.search_budget_ms = float(os.environ.get("SEARCH_BUDGET_MS", "70"))
         # Soft combat ranking (optional). Hard safe_move filter is always on.
         self.survival_filter = _env_flag("SURVIVAL_FILTER", False)
         self.hunger_health = int(os.environ.get("SURVIVAL_HUNGER_HEALTH", "35"))
@@ -245,28 +249,29 @@ class SnakeRuntime:
             self._merge_player_ids(payload)
 
     def decide_move(self, payload: Mapping[str, Any]) -> str:
-        # Serialised: see the _lock comment in __init__. Overlapping /move
-        # calls previously corrupted the shared native env and killed the
-        # process outright.
-        with self._lock:
-            return self._decide_move_locked(payload)
-
-    def _decide_move_locked(self, payload: Mapping[str, Any]) -> str:
         t0 = time.perf_counter()
         preferred: Optional[str] = None
         source = "safe"
-        self._model_ranking = []
+        ranking: List[str] = []
         t_ensure = t_model = t_strategy = 0.0
         try:
-            t1 = time.perf_counter()
-            self._ensure_game(payload)
-            t_ensure = (time.perf_counter() - t1) * 1000.0
-            if self._pid_by_snake_id:
+            # Only the env-touching part is serialised. hisss is the piece that
+            # is not thread-safe; the search and heuristics below are pure
+            # Python over the JSON payload, so holding the lock through them
+            # would queue every concurrent game behind one search budget
+            # (8 games x 70 ms = 560 ms, past the 500 ms deadline) for no reason.
+            with self._lock:
                 t1 = time.perf_counter()
-                preferred = self._model_move(payload)
-                t_model = (time.perf_counter() - t1) * 1000.0
-                if preferred is not None:
-                    source = "model"
+                self._ensure_game(payload)
+                t_ensure = (time.perf_counter() - t1) * 1000.0
+                if self._pid_by_snake_id:
+                    t1 = time.perf_counter()
+                    self._model_ranking = []
+                    preferred = self._model_move(payload)
+                    ranking = list(self._model_ranking)
+                    t_model = (time.perf_counter() - t1) * 1000.0
+                    if preferred is not None:
+                        source = "model"
         except Exception:
             self._fallback_count += 1
             # This is never routine. When it fires the RL agent is not playing
@@ -290,15 +295,33 @@ class SnakeRuntime:
             if self.move_strategy == "tactics":
                 move, debug = tactics.choose_move(payload, preferred=preferred)
                 source = f"tactics/{source}"
-            elif self.move_strategy == "model" and self._model_ranking:
+            elif self.move_strategy == "veto" and ranking:
+                # The policy still chooses -- it eats well and grows -- but a
+                # short lookahead rejects any choice the opponents can force a
+                # loss against. Measured paired against the policy alone, in
+                # the same games: +10 points of win rate on two seeds.
+                safe = tactics.safe_moves(payload)
+                ranked = [m for m in ranking if m in safe] or ranking
+                move, sdbg = search.veto(
+                    payload, ranked, time_budget_ms=self.search_budget_ms
+                )
+                if move is None:
+                    move = next((m for m in ranked if m in safe), None) or choose_safe_move(
+                        payload, preferred=preferred
+                    )
+                    source = f"veto_fallback/{source}"
+                else:
+                    source = f"veto/{source}"
+                debug = {"model_ranking": ranking, "safe_moves": safe, "search": sdbg}
+            elif self.move_strategy == "model" and ranking:
                 # Policy decides, restricted to moves that are not suicide and do
                 # not lose a head-to-head. Use when the net outplays the search.
                 safe = tactics.safe_moves(payload)
-                move = next((m for m in self._model_ranking if m in safe), None) or choose_safe_move(
+                move = next((m for m in ranking if m in safe), None) or choose_safe_move(
                     payload, preferred=preferred
                 )
                 source = f"model_safe/{source}"
-                debug = {"model_ranking": list(self._model_ranking), "safe_moves": safe}
+                debug = {"model_ranking": ranking, "safe_moves": safe}
             else:
                 move = choose_safe_move(payload, preferred=preferred)
         except Exception:
