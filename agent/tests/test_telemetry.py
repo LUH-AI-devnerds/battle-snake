@@ -116,3 +116,21 @@ def test_handler_exception_counts_as_a_fallback():
     snap = t.snapshot()
     assert snap["fallback_moves"] == 1
     assert not t.healthy()
+
+
+def test_terminal_move_is_not_counted_as_a_fallback():
+    """Being already eliminated is not a defect.
+
+    The engine still asks for a move on the turn our snake is eliminated.
+    _model_move correctly declines, and the heuristic answers. Counting that
+    as a fallback made /health report degraded for the rest of the process
+    over a single benign event -- a monitor that cries wolf stops being read.
+    """
+    t = Telemetry()
+    t.on_start("g1")
+    t.on_move("g1", _decision(0), _you())
+    t.on_move("g1", _decision(1, source="terminal"), _you())
+    snap = t.snapshot()
+    assert snap["fallback_moves"] == 0
+    assert t.healthy()
+    assert snap["move_sources"]["terminal"] == 1

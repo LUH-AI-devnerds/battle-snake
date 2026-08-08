@@ -114,6 +114,9 @@ class Telemetry:
     def on_move(self, game_id: str, decision: Mapping[str, Any], you: Mapping[str, Any]) -> None:
         source = str(decision.get("source") or "unknown")
         ms = float(decision.get("ms") or 0.0)
+        # "terminal" means we were already eliminated and the engine asked for
+        # one more move -- expected, not a defect. Everything else that did not
+        # come from the policy is a real fallback.
         is_fallback = "exception" in source or source == "safe"
         with self._lock:
             rec = self._record_for(game_id)

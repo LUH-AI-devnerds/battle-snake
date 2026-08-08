@@ -91,6 +91,7 @@ class SnakeRuntime:
         self._fallback_count = 0
         self._last_decision: Dict[str, Any] = {}
         self._model_ranking: List[str] = []
+        self._terminal_state = False
         # hisss wraps a native game object and is not thread-safe. FastAPI runs
         # these sync handlers in a thread pool, so two overlapping /move calls
         # mutate the same env via set_state/get_obs and corrupt its memory --
@@ -253,6 +254,7 @@ class SnakeRuntime:
         preferred: Optional[str] = None
         source = "safe"
         ranking: List[str] = []
+        self._terminal_state = False
         t_ensure = t_model = t_strategy = 0.0
         try:
             # Only the env-touching part is serialised. hisss is the piece that
@@ -324,6 +326,8 @@ class SnakeRuntime:
                 debug = {"model_ranking": ranking, "safe_moves": safe}
             else:
                 move = choose_safe_move(payload, preferred=preferred)
+                if self._terminal_state and source == "safe":
+                    source = "terminal"
         except Exception:
             self._fallback_count += 1
             logger.exception("Move selection failed; using safe JSON move")
@@ -376,6 +380,10 @@ class SnakeRuntime:
         self._select_env(self._force_players, width, height)
 
         if your_pid >= len(state.snakes_alive) or not state.snakes_alive[your_pid]:
+            # We are already eliminated. The engine still asks for a move on the
+            # final turn; answering from the heuristic is correct and is not a
+            # failure, so mark it so the health signal does not cry wolf.
+            self._terminal_state = True
             return None
 
         self._env.set_state(state)
