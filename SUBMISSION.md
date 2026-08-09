@@ -6,7 +6,7 @@
 |---|---|
 | URL | https://web-production-01418.up.railway.app |
 | checkpoint | `best_checkpoint/ppo_league_best.pt` (PPO, ep19500) |
-| strategy | `MOVE_STRATEGY=model` — policy ranks moves, one-step filter rejects suicide and losing head-to-heads |
+| strategy | `MOVE_STRATEGY=model_space` — policy ranks moves; the filter rejects suicide, losing head-to-heads, **and pockets too small to hold us** |
 | threads | `torch` pinned to 1 (see server.py) |
 
 ## Why this checkpoint
@@ -32,6 +32,18 @@ that entire gap disappeared under paired evaluation. The noise floor is about
 +10 points only because the harness let the search read the full board; under
 real fog-limited visibility it was −13 on one seed and +15 on another, i.e. no
 resolvable effect, and it consumed ~40% of the real latency headroom.
+
+## The one change that earned its place
+
+Adding a space check to the move filter is worth **+0.146 points/game**,
+95% CI [+0.053, +0.239], over 720 paired fog-limited games across 12
+independent seeds (11/12 positive, sign-test p = 0.006). Head-to-head
+avoidance alone cannot see a move that is safe this turn and a sealed dead
+end four turns later, and self-trapping produces the early eliminations that
+cost the most rating.
+
+Everything else tried today failed the same bar and was **not** shipped:
+reward shaping, the lookahead veto, and both retrained checkpoints.
 
 ## Latency reality
 
