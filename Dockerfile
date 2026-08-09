@@ -31,15 +31,17 @@ RUN python -c "from battlesnake_ai.env.hisss_view_radius_fix import apply_view_r
 ENV BATTLE_SNAKE_CHECKPOINT="best_checkpoint/ppo_league_best.pt"
 ENV SNAKE_AUTHOR="the sea snake"
 ENV SNAKE_COLOR="#4488ff"
-# Move selection: the league-trained policy ranks the moves and a one-step
-# filter rejects suicide and losing head-to-heads.
+# Move selection: the league-trained policy ranks the moves; the filter rejects
+# suicide, losing head-to-heads, and moves into a pocket too small to hold us.
+# The space check is worth +0.146 points/game (95% CI [+0.053,+0.239]) over
+# head-to-head alone, measured across 720 paired fog-limited games.
 #
 # MOVE_STRATEGY=veto adds a lookahead search on top. Do not enable it until the
 # search is fog-aware: it builds its board from the /move payload, which under
 # fog of war truncates opponent bodies and hides food, so it treats occupied
 # cells as free. Measured against the policy alone in the same games with
 # production visibility, it is 13 points *worse* (33.0% vs 46.0%).
-ENV MOVE_STRATEGY="model"
+ENV MOVE_STRATEGY="model_space"
 ENV SEARCH_BUDGET_MS="70"
 # Model was trained with survival reward shaping; use raw Q at inference.
 ENV SURVIVAL_FILTER="0"

@@ -113,7 +113,7 @@ class Agent:
         self.model = None
         self.budget = 70.0
         self.impl = None
-        if self.kind in ("model", "veto"):
+        if self.kind in ("model", "veto", "model_space"):
             parts = spec.split(":")
             self.model, _ = load_agent(parts[1], device=torch.device("cpu"))
             self.model.eval()
@@ -143,7 +143,7 @@ class Agent:
             with torch.no_grad():
                 scores = self.model(obs[row:row + 1]).detach().cpu().numpy()[0]
             order = sorted(range(4), key=lambda i: -scores[i])
-            safe = tactics.safe_moves(payload)
+            safe = tactics.safe_moves(payload, require_space=(self.kind == "model_space"))
             ranked = [ACTION_NAMES[i] for i in order if ACTION_NAMES[i] in safe] or \
                      [ACTION_NAMES[i] for i in order]
             if self.kind == "veto":
@@ -216,6 +216,8 @@ def main() -> None:
     ap.add_argument("--opponents", nargs=2, required=True, help="the other two seats")
     ap.add_argument("--episodes", type=int, default=60, help="episodes per seed")
     ap.add_argument("--seeds", type=int, default=5)
+    ap.add_argument("--seed-offset", type=int, default=0,
+                    help="Shift the seed sequence to get an independent sample")
     args = ap.parse_args()
 
     agents = [Agent(args.a), Agent(args.b), Agent(args.opponents[0]), Agent(args.opponents[1])]
@@ -226,7 +228,7 @@ def main() -> None:
     a_pts: List[float] = []
     b_pts: List[float] = []
     for k in range(args.seeds):
-        seed = 1000 + k * 137
+        seed = 1000 + args.seed_offset + k * 137
         block = run_block(agents, args.episodes, seed)
         da = [x[0] for x in block]
         db = [x[1] for x in block]

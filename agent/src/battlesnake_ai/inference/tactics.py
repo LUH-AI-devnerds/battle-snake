@@ -204,8 +204,18 @@ def legal_moves(payload: Mapping[str, Any]) -> List[str]:
     return out
 
 
-def safe_moves(payload: Mapping[str, Any]) -> List[str]:
-    """Legal moves that also avoid a head-to-head with an equal/longer snake."""
+def safe_moves(payload: Mapping[str, Any], *, require_space: bool = False) -> List[str]:
+    """Legal moves that also avoid a head-to-head with an equal/longer snake.
+
+    With ``require_space``, moves that lead into a pocket too small to hold the
+    snake are dropped as well. The head-to-head check alone cannot see this:
+    a move can be perfectly safe this turn and still be a dead end that kills
+    us a dozen turns later. Self-trapping is a leading cause of early
+    eliminations, which are the placements that cost the most rating.
+
+    Both filters degrade rather than fail: if every move is rejected we return
+    the least-bad set instead of nothing, because a move must always be made.
+    """
     legal = legal_moves(payload)
     if not legal:
         return []
@@ -226,7 +236,39 @@ def safe_moves(payload: Mapping[str, Any]) -> List[str]:
         )
         if not risky:
             safe.append(name)
-    return safe or legal
+    safe = safe or legal
+
+    if not require_space or len(safe) <= 1:
+        return safe
+
+    width, height = _dims(payload)
+    # Keep our current head cell blocked here. legal_moves discards it because
+    # you cannot step onto your own head anyway, but for measuring the space a
+    # move leads into it is still our body next turn -- leaving it free invents
+    # an escape route through ourselves and makes real pockets look open.
+    blocked = occupied(payload, ignore_tails=True)
+    blocked.add(head)
+
+    roomy: List[str] = []
+    spaces: Dict[str, int] = {}
+    for name in safe:
+        dx, dy = _DELTAS[name]
+        nxt = (head[0] + dx, head[1] + dy)
+        # Fill *from* nxt, so nxt must not be in the blocked set -- adding it
+        # first makes flood_fill return 0 for every move, which is exactly the
+        # dead space term this filter exists to provide.
+        # Cap the fill at the length we need; we only care whether we fit.
+        space = flood_fill(nxt, width=width, height=height, blocked=blocked,
+                           limit=max(our_len + 2, 8))
+        spaces[name] = space
+        if space > our_len:
+            roomy.append(name)
+
+    if roomy:
+        return roomy
+    # Every option is a pocket: take the largest rather than none.
+    best = max(spaces.values())
+    return [m for m in safe if spaces[m] == best]
 
 
 def score_move(payload: Mapping[str, Any], move: str) -> float:

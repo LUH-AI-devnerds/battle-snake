@@ -73,7 +73,10 @@ class SnakeRuntime:
         self.model, self.meta = load_agent(ckpt, device=dev)
         self.fallback_move = fallback_move if fallback_move in ACTION_FROM_NAME else "up"
         # How the final move is chosen:
-        #   model   — policy ranks, one-step head-to-head filter (default, shipped)
+        #   model_space — policy ranks; filter rejects suicide, losing
+        #                 head-to-heads, and pockets too small to hold us
+        #                 (default, shipped; +0.146 pts/game over "model")
+        #   model   — as above without the space check
         #   veto    — model plus a lookahead search that rejects losing moves
         #   tactics — flood-fill/food/H2H search decides, model breaks ties
         #   safe    — legacy space heuristic, model breaks ties
@@ -82,7 +85,7 @@ class SnakeRuntime:
         # defaulted to "veto" while the Dockerfile pinned "model", so any host
         # without that env silently ran a configuration that measured no better
         # under fog-of-war visibility and spent ~40% of the real latency budget.
-        self.move_strategy = os.environ.get("MOVE_STRATEGY", "model").strip().lower()
+        self.move_strategy = os.environ.get("MOVE_STRATEGY", "model_space").strip().lower()
         # Time the lookahead veto may spend per move. Blackout allows 500 ms and
         # the policy itself costs ~15 ms, so this stays far inside the budget.
         self.search_budget_ms = float(os.environ.get("SEARCH_BUDGET_MS", "70"))
@@ -320,6 +323,14 @@ class SnakeRuntime:
                 else:
                     source = f"veto/{source}"
                 debug = {"model_ranking": ranking, "safe_moves": safe, "search": sdbg}
+            elif self.move_strategy == "model_space" and ranking:
+                # As "model", plus refusing moves into a pocket smaller than us.
+                safe = tactics.safe_moves(payload, require_space=True)
+                move = next((m for m in ranking if m in safe), None) or choose_safe_move(
+                    payload, preferred=preferred
+                )
+                source = f"model_space/{source}"
+                debug = {"model_ranking": ranking, "safe_moves": safe}
             elif self.move_strategy == "model" and ranking:
                 # Policy decides, restricted to moves that are not suicide and do
                 # not lose a head-to-head. Use when the net outplays the search.

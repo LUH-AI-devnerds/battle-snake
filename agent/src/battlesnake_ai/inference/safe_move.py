@@ -187,9 +187,10 @@ def score_move(payload: Mapping[str, Any], move: str) -> float:
     width, height = _board_size(payload)
     blocked = occupied_cells(payload, ignore_tails=True)
     blocked.discard(head)
-    blocked_after = set(blocked)
-    blocked_after.add(nxt)
-    space = flood_fill(nxt, width=width, height=height, blocked=blocked_after)
+    # flood_fill returns 0 when the start cell is blocked, so nxt must stay out
+    # of the blocked set. It did not, which zeroed the space term for every
+    # move and left this heuristic ranking purely on food and wall distance.
+    space = flood_fill(nxt, width=width, height=height, blocked=blocked)
 
     # Losing head-to-head: an equal/longer snake can reach this cell next turn.
     our_len = int(you.get("length") or len(body))

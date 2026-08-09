@@ -290,12 +290,12 @@ def test_default_strategy_matches_the_deployed_one():
 
     root = Path(__file__).resolve().parents[2]
     dockerfile = (root / "Dockerfile").read_text()
-    m = re.search(r'ENV MOVE_STRATEGY="([a-z]+)"', dockerfile)
+    m = re.search(r'ENV MOVE_STRATEGY="([a-z_]+)"', dockerfile)
     assert m, "Dockerfile must pin MOVE_STRATEGY explicitly"
     shipped = m.group(1)
 
     runtime_src = (root / "agent/src/battlesnake_ai/inference/runtime.py").read_text()
-    d = re.search(r'os\.environ\.get\("MOVE_STRATEGY",\s*"([a-z]+)"\)', runtime_src)
+    d = re.search(r'os\.environ\.get\("MOVE_STRATEGY",\s*"([a-z_]+)"\)', runtime_src)
     assert d, "runtime must have an explicit MOVE_STRATEGY default"
     assert d.group(1) == shipped, (
         f"code default {d.group(1)!r} != Dockerfile {shipped!r}"
